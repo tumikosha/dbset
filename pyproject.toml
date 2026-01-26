@@ -1,0 +1,13 @@
+[project]
+name = "dbset"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["dbset/src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["dbset/src"]

@@ -14,7 +14,6 @@ A Python library for simplified database operations, inspired by the original `d
 
 ## Installation
 
-Already included in the TriggerAI project. All dependencies are in `pyproject.toml`:
 - `sqlalchemy[asyncio]>=2.0.25`
 - `asyncpg>=0.29.0` (async PostgreSQL driver)
 - `psycopg2-binary>=2.9.9` (sync PostgreSQL driver)
@@ -369,7 +368,6 @@ uv run pytest tests/unit/dataset/test_async_core.py -v
 uv run pytest tests/unit/dataset/ --cov=src/dataset --cov-report=html
 ```
 
-## Examples for TriggerAI
 
 ### Marketing Churn Query
 
