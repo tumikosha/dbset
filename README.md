@@ -14,22 +14,45 @@ A Python library for simplified database operations, inspired by the original `d
 
 ## Installation
 
-- `sqlalchemy[asyncio]>=2.0.25`
-- `asyncpg>=0.29.0` (async PostgreSQL driver)
-- `psycopg2-binary>=2.9.9` (sync PostgreSQL driver)
-- `aiosqlite>=0.19.0` (async SQLite driver for tests)
+```bash
+pip install dbset                  # base installation
+pip install 'dbset[asyncpg]'         # + async PostgreSQL driver
+pip install 'dbset[psycopg2]'        # + sync PostgreSQL driver
+pip install 'dbset[postgres]'        # + all PostgreSQL drivers
+pip install 'dbset[aiosqlite]'       # + async SQLite driver
+pip install 'dbset[all]'             # all drivers
+pip install 'dbset[dev]'             # development dependencies
+```
+
+### Dependencies
+
+- `sqlalchemy>=2.0` (core dependency)
+- `greenlet>=3.0` (for SQLAlchemy async support)
+- `asyncpg>=0.29.0` (async PostgreSQL driver, optional)
+- `psycopg2-binary>=2.9.9` (sync PostgreSQL driver, optional)
+- `aiosqlite>=0.19.0` (async SQLite driver, optional)
 
 ## Quick Start
+    db = connect('sqlite:///:memory:')
+    # db = connect('sqlite:///db.sqlite')
+    # db = connect('postgresql://localhost/mydb')
+    users = db['users']                                 # Get table
+    pk = users.insert({'name': 'John', 'age': 30})      # Insert data 
+    for user in users.find(age={'>=': 18}):             # Find with filters
+        print(user)
+    db.close()
 
 ### Async API (Recommended)
 
 ```python
-from dbset import async_connect
-
+import asyncio
+from dbset import connect, async_connect
 
 async def main():
-    # Connect to database
-    db = await async_connect('postgresql+asyncpg://localhost/mydb')
+    # Connect to database   
+    # db = await async_connect('postgresql+asyncpg://localhost/mydb')
+    # db = await async_connect('sqlite+aiosqlite:///db.sqlite')
+    db = await async_connect('sqlite+aiosqlite:///:memory:')
 
     # Get table (auto-creates if doesn't exist)
     users = db['users']
@@ -49,6 +72,10 @@ async def main():
 
     # Close connection
     await db.close()
+
+if __name__ == '__main__':
+    result = asyncio.run(main())
+    print(result)
 ```
 
 ### Sync API (For Simple Scripts)
@@ -57,6 +84,8 @@ async def main():
 from dbset import connect
 
 # Connect to database
+# db = connect('sqlite:///:memory:')
+# db = connect('sqlite:///db.sqlite')
 db = connect('postgresql://localhost/mydb')
 
 # Get table
@@ -443,4 +472,4 @@ def import_customers(csv_path: str):
 - Always possible to drop down to SQLAlchemy when needed
 
 ## License
-MIT
+Apache-2.0

@@ -1,9 +1,37 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "dbset"
 version = "0.1.0"
-description = "Add your description here"
+description = "Thin wrapper on SQLAlchemy with async/await support - simplified database operations"
+readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.11"
-dependencies = []
+authors = [{name = "TriggerAI Team"}]
+keywords = ["database", "sqlalchemy", "async", "postgresql", "sqlite", "orm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: AsyncIO",
+    "Topic :: Database",
+]
+
+dependencies = [
+    "sqlalchemy>=2.0",
+    "greenlet>=3.0",
+]
+
+[project.optional-dependencies]
+asyncpg = ["asyncpg>=0.29.0"]
+psycopg2 = ["psycopg2-binary>=2.9.9"]
+aiosqlite = ["aiosqlite>=0.19.0"]
+postgres = ["asyncpg>=0.29.0", "psycopg2-binary>=2.9.9"]
+all = ["asyncpg>=0.29.0", "psycopg2-binary>=2.9.9", "aiosqlite>=0.19.0"]
+dev = ["pytest>=9.0", "pytest-asyncio>=0.23.0", "aiosqlite>=0.19.0"]
 
 [tool.setuptools.packages.find]
 where = ["dbset/src"]
