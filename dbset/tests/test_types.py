@@ -4,7 +4,8 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import Boolean, Date, DateTime, Float, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, Integer, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 
 from dbset.types import TypeInference, TypeInferenceError
 
@@ -165,3 +166,95 @@ def test_custom_max_string_length():
     # Custom threshold (30) - should use Text
     result = TypeInference.infer_type(short_string, max_string_length=30)
     assert isinstance(result, Text)
+
+
+# JSON/JSONB type inference tests
+
+def test_infer_dict_generic():
+    """Test dict inference without dialect -> JSON."""
+    result = TypeInference.infer_type({'key': 'value'})
+    assert isinstance(result, JSON)
+
+
+def test_infer_list_generic():
+    """Test list inference without dialect -> JSON."""
+    result = TypeInference.infer_type([1, 2, 3])
+    assert isinstance(result, JSON)
+
+
+def test_infer_nested_dict_generic():
+    """Test nested dict inference without dialect -> JSON."""
+    nested = {
+        'user': {'name': 'John', 'age': 30},
+        'orders': [{'id': 1}, {'id': 2}]
+    }
+    result = TypeInference.infer_type(nested)
+    assert isinstance(result, JSON)
+
+
+def test_infer_dict_postgresql():
+    """Test dict inference with PostgreSQL dialect -> JSONB."""
+    result = TypeInference.infer_type({'key': 'value'}, dialect='postgresql')
+    assert isinstance(result, JSONB)
+
+
+def test_infer_list_postgresql():
+    """Test list inference with PostgreSQL dialect -> JSONB."""
+    result = TypeInference.infer_type([1, 2, 3], dialect='postgresql')
+    assert isinstance(result, JSONB)
+
+
+def test_infer_nested_dict_postgresql():
+    """Test nested dict inference with PostgreSQL dialect -> JSONB."""
+    nested = {
+        'user': {'name': 'John', 'age': 30},
+        'orders': [{'id': 1}, {'id': 2}]
+    }
+    result = TypeInference.infer_type(nested, dialect='postgresql')
+    assert isinstance(result, JSONB)
+
+
+def test_infer_dict_sqlite():
+    """Test dict inference with SQLite dialect -> JSON."""
+    result = TypeInference.infer_type({'key': 'value'}, dialect='sqlite')
+    assert isinstance(result, JSON)
+
+
+def test_infer_types_from_row_with_json():
+    """Test inferring types for row containing JSON fields."""
+    row = {
+        'name': 'John',
+        'metadata': {'role': 'admin', 'permissions': ['read', 'write']},
+        'tags': ['python', 'sql'],
+    }
+
+    # Without dialect -> JSON
+    types = TypeInference.infer_types_from_row(row)
+    assert isinstance(types['name'], String)
+    assert isinstance(types['metadata'], JSON)
+    assert isinstance(types['tags'], JSON)
+
+    # With PostgreSQL dialect -> JSONB
+    types = TypeInference.infer_types_from_row(row, dialect='postgresql')
+    assert isinstance(types['name'], String)
+    assert isinstance(types['metadata'], JSONB)
+    assert isinstance(types['tags'], JSONB)
+
+
+def test_merge_json_types():
+    """Test merging JSON types."""
+    # JSON + JSON = JSON
+    result = TypeInference.merge_types(JSON(), JSON())
+    assert isinstance(result, JSON)
+
+    # JSONB + JSONB = JSONB
+    result = TypeInference.merge_types(JSONB(), JSONB())
+    assert isinstance(result, JSONB)
+
+    # JSON + JSONB = JSONB (prefer JSONB)
+    result = TypeInference.merge_types(JSON(), JSONB())
+    assert isinstance(result, JSONB)
+
+    # JSONB + JSON = JSONB (prefer JSONB)
+    result = TypeInference.merge_types(JSONB(), JSON())
+    assert isinstance(result, JSONB)

@@ -13,6 +13,7 @@
 - **Connection Pooling** - Efficient connection reuse through SQLAlchemy
 - **Dict-based Filtering** - Pythonic query API with advanced filters
 - **Automatic Type Inference** - Automatic Python → SQLAlchemy type mapping
+- **JSON/JSONB Support** - Native handling of nested dicts and lists (JSONB for PostgreSQL)
 - **UUID Support** - UUID-based primary keys
 - **Index Management** - Automatic and manual index creation
 - **Transactions** - Transaction support via context managers
@@ -1039,6 +1040,8 @@ Class for automatic SQLAlchemy type inference from Python values.
 | `bytes` | `Text()` | May be improved for binary types |
 | `datetime` | `DateTime()` | |
 | `date` | `Date()` | |
+| `dict` | `JSON()` or `JSONB()` | JSONB for PostgreSQL, JSON for others |
+| `list` | `JSON()` or `JSONB()` | JSONB for PostgreSQL, JSON for others |
 | `None` | `String(255)` | Nullable by default |
 
 **Examples:**
@@ -1065,6 +1068,82 @@ types = TypeInference.infer_types_from_row(row)
 TypeInference.merge_types(Integer(), Float())   # Float()
 TypeInference.merge_types(String(50), String(100))  # String(100)
 TypeInference.merge_types(Date(), DateTime())   # DateTime()
+
+# JSON types (auto-detect dialect)
+TypeInference.infer_type({'key': 'value'})                    # JSON()
+TypeInference.infer_type({'key': 'value'}, dialect='postgresql')  # JSONB()
+TypeInference.infer_type([1, 2, 3], dialect='postgresql')     # JSONB()
+```
+
+---
+
+## JSON/JSONB Support
+
+DBSet automatically handles nested Python dicts and lists, storing them as JSON columns. For PostgreSQL, the optimized **JSONB** type is used automatically.
+
+### Inserting JSON Data
+
+```python
+# Insert data with nested structures - no manual serialization needed!
+await users.insert({
+    'name': 'John',
+    'metadata': {
+        'role': 'admin',
+        'permissions': ['read', 'write', 'delete']
+    },
+    'tags': ['python', 'sql', 'async'],
+    'orders': [
+        {'product': 'Book', 'qty': 2, 'price': 29.99},
+        {'product': 'Pen', 'qty': 5, 'price': 4.99}
+    ]
+})
+
+# Data is stored as:
+# - PostgreSQL: JSONB columns (fast queries, indexable)
+# - SQLite/others: JSON columns
+```
+
+### Querying JSON Data
+
+```python
+# Data comes back as Python dicts/lists
+user = await users.find_one(name='John')
+print(user['metadata']['role'])       # 'admin'
+print(user['orders'][0]['product'])   # 'Book'
+print(user['tags'])                   # ['python', 'sql', 'async']
+```
+
+### Type Mapping by Database
+
+| Python Type | PostgreSQL | SQLite | Other |
+|-------------|------------|--------|-------|
+| `dict` | JSONB | JSON | JSON |
+| `list` | JSONB | JSON | JSON |
+
+### Why JSONB for PostgreSQL?
+
+- **Binary storage format** - faster reads and queries
+- **Supports GIN indexes** - fast JSON content queries
+- **Native operators** - `->`, `->>`, `@>`, `?` for querying inside JSON
+- **No duplicate keys** - automatically deduplicated
+- **No whitespace preservation** - more compact storage
+
+### Advanced: SQLAlchemy JSON Queries
+
+For complex JSON queries, use SQLAlchemy directly:
+
+```python
+from sqlalchemy import select
+
+users_table = await users.table
+
+# PostgreSQL JSONB operators via SQLAlchemy
+stmt = select(users_table).where(
+    users_table.c.metadata['role'].astext == 'admin'
+)
+
+async for row in db.query(stmt):
+    print(row)
 ```
 
 ---
@@ -1320,11 +1399,12 @@ except ConnectionError as e:
 ## Development Status
 
 **Phases 1-3 Complete:**
-- Infrastructure (exceptions, types, validators, connection, query)
-- Schema management (DDL operations)
-- Async API (AsyncDatabase, AsyncTable)
-- Sync API (Database, Table)
-- Unit tests (63+ tests)
+- ✅ Infrastructure (exceptions, types, validators, connection, query)
+- ✅ Schema management (DDL operations)
+- ✅ Async API (AsyncDatabase, AsyncTable)
+- ✅ Sync API (Database, Table)
+- ✅ JSON/JSONB support (auto-detection by dialect)
+- ✅ Unit tests (170+ tests)
 
 **Remaining Phases:**
 - [ ] Integration tests with PostgreSQL

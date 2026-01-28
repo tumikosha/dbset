@@ -348,6 +348,11 @@ class Table:
         """Get table name."""
         return self._name
 
+    @property
+    def _dialect(self) -> str:
+        """Get database dialect name (e.g., 'postgresql', 'sqlite')."""
+        return self._db._engine.dialect.name
+
     def insert(
         self,
         row: dict[str, Any],
@@ -395,7 +400,7 @@ class Table:
 
         # Infer types and ensure columns exist
         if ensure:
-            inferred_types = TypeInference.infer_types_from_row(row)
+            inferred_types = TypeInference.infer_types_from_row(row, dialect=self._dialect)
             if types:
                 inferred_types.update(types)
             self._schema.ensure_columns(table, inferred_types)
@@ -453,7 +458,7 @@ class Table:
 
         # Infer types and ensure columns
         if ensure:
-            inferred_types = TypeInference.infer_types_from_row(rows[0])
+            inferred_types = TypeInference.infer_types_from_row(rows[0], dialect=self._dialect)
             self._schema.ensure_columns(table, inferred_types)
 
             # Clear cached table and reload
@@ -669,7 +674,7 @@ class Table:
             )
 
             # Infer types and ensure columns exist
-            inferred_types = TypeInference.infer_types_from_row(row)
+            inferred_types = TypeInference.infer_types_from_row(row, dialect=self._dialect)
             if types:
                 inferred_types.update(types)
             self._schema.ensure_columns(table, inferred_types)
@@ -743,7 +748,7 @@ class Table:
             )
 
             # Infer types from first row and ensure columns exist
-            inferred_types = TypeInference.infer_types_from_row(rows[0])
+            inferred_types = TypeInference.infer_types_from_row(rows[0], dialect=self._dialect)
             if types:
                 inferred_types.update(types)
             self._schema.ensure_columns(table, inferred_types)

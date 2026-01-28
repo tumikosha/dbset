@@ -7,6 +7,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Column,
     Date,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeEngine
 
 from .exceptions import TypeInferenceError
@@ -33,13 +35,19 @@ class TypeInference:
     STRING_LENGTH_THRESHOLD = 255
 
     @staticmethod
-    def infer_type(value: Any, max_string_length: int | None = None) -> TypeEngine:
+    def infer_type(
+        value: Any,
+        max_string_length: int | None = None,
+        dialect: str | None = None,
+    ) -> TypeEngine:
         """
         Infer SQLAlchemy type from Python value.
 
         Args:
             value: Python value to infer type from
             max_string_length: Maximum string length before using Text (default: 255)
+            dialect: Database dialect name (e.g., 'postgresql', 'sqlite')
+                     Used to select optimal type (JSONB for PostgreSQL)
 
         Returns:
             SQLAlchemy type instance
@@ -54,6 +62,10 @@ class TypeInference:
             String(255)
             >>> TypeInference.infer_type(True)
             Boolean()
+            >>> TypeInference.infer_type({'key': 'value'}, dialect='postgresql')
+            JSONB()
+            >>> TypeInference.infer_type([1, 2, 3], dialect='sqlite')
+            JSON()
         """
         if max_string_length is None:
             max_string_length = TypeInference.STRING_LENGTH_THRESHOLD
@@ -95,6 +107,12 @@ class TypeInference:
         # Bytes - store as Text (can be enhanced later for binary types)
         if isinstance(value, bytes):
             return Text()
+
+        # JSON types (dict, list) - use JSONB for PostgreSQL, JSON for others
+        if isinstance(value, (dict, list)):
+            if dialect == 'postgresql':
+                return JSONB()
+            return JSON()
 
         # Unknown type
         raise TypeInferenceError(
@@ -153,6 +171,7 @@ class TypeInference:
     def infer_types_from_row(
         row: dict[str, Any],
         max_string_length: int | None = None,
+        dialect: str | None = None,
     ) -> dict[str, TypeEngine]:
         """
         Infer types for all columns in a row.
@@ -160,6 +179,7 @@ class TypeInference:
         Args:
             row: Dictionary of column_name -> value
             max_string_length: Maximum string length before using Text
+            dialect: Database dialect name (e.g., 'postgresql', 'sqlite')
 
         Returns:
             Dictionary of column_name -> SQLAlchemy type
@@ -167,11 +187,16 @@ class TypeInference:
         Examples:
             >>> TypeInference.infer_types_from_row({'name': 'John', 'age': 30})
             {'name': String(255), 'age': Integer()}
+            >>> TypeInference.infer_types_from_row(
+            ...     {'data': {'nested': 'value'}},
+            ...     dialect='postgresql'
+            ... )
+            {'data': JSONB()}
         """
         types = {}
         for column_name, value in row.items():
             types[column_name] = TypeInference.infer_type(
-                value, max_string_length=max_string_length
+                value, max_string_length=max_string_length, dialect=dialect
             )
         return types
 
@@ -234,6 +259,13 @@ class TypeInference:
         # String + Text = Text
         if isinstance(type1, (String, Text)) and isinstance(type2, (String, Text)):
             return Text()
+
+        # JSON + JSONB = prefer JSONB (more efficient on PostgreSQL)
+        if isinstance(type1, (JSON, JSONB)) and isinstance(type2, (JSON, JSONB)):
+            # Prefer JSONB if either is JSONB
+            if isinstance(type1, JSONB) or isinstance(type2, JSONB):
+                return JSONB()
+            return JSON()
 
         # Default: use Text as most general string type
         return Text()

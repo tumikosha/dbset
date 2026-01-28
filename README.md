@@ -11,6 +11,7 @@ A Python library for simplified database operations, inspired by the original `d
 - **Connection Pooling**: Efficient connection reuse via SQLAlchemy
 - **Dict-Based Filtering**: Pythonic query API with advanced filters
 - **Type Inference**: Automatic Python → SQLAlchemy type mapping
+- **JSON/JSONB Support**: Native handling of nested dicts and lists (JSONB for PostgreSQL)
 
 ## Installation
 
@@ -202,6 +203,48 @@ with db.transaction():
     orders.insert({'user_id': 1, 'total': 100})
 ```
 
+### JSON/JSONB Support
+
+DBset automatically handles nested Python dicts and lists, storing them as JSON columns. For PostgreSQL, the optimized **JSONB** type is used automatically.
+
+```python
+# Insert data with nested structures - no manual serialization needed!
+await users.insert({
+    'name': 'John',
+    'metadata': {
+        'role': 'admin',
+        'permissions': ['read', 'write', 'delete']
+    },
+    'tags': ['python', 'sql', 'async'],
+    'orders': [
+        {'product': 'Book', 'qty': 2, 'price': 29.99},
+        {'product': 'Pen', 'qty': 5, 'price': 4.99}
+    ]
+})
+
+# Data is stored as:
+# - PostgreSQL: JSONB columns (fast queries, indexable)
+# - SQLite/others: JSON columns
+
+# Query and use - data comes back as Python dicts/lists
+user = await users.find_one(name='John')
+print(user['metadata']['role'])  # 'admin'
+print(user['orders'][0]['product'])  # 'Book'
+```
+
+**Type mapping by database:**
+
+| Python Type | PostgreSQL | SQLite | Other |
+|-------------|------------|--------|-------|
+| `dict` | JSONB | JSON | JSON |
+| `list` | JSONB | JSON | JSON |
+
+**Why JSONB for PostgreSQL?**
+- Binary storage format - faster reads
+- Supports GIN indexes for fast JSON queries
+- Native operators: `->`, `->>`, `@>`, `?`
+- No duplicate keys, no whitespace preservation
+
 ### Index Management
 
 AsyncDataset automatically manages indexes for optimal performance.
@@ -359,7 +402,7 @@ dataset/
 
 1. **Schema Discovery**: Reflects database schema using SQLAlchemy MetaData
 2. **Auto-Create**: Automatically creates tables/columns on insert
-3. **Type Inference**: Infers SQLAlchemy types from Python values
+3. **Type Inference**: Infers SQLAlchemy types from Python values (including JSON/JSONB for dicts/lists)
 4. **Query Building**: Translates dict filters to SQLAlchemy WHERE clauses
 5. **Validation**: Checks SQL safety in read-only mode
 6. **Execution**: Executes via SQLAlchemy async/sync engines
@@ -455,7 +498,8 @@ def import_customers(csv_path: str):
 - ✅ Schema management (DDL operations)
 - ✅ Async API (AsyncDatabase, AsyncTable)
 - ✅ Sync API (Database, Table)
-- ✅ Unit tests (63 tests passing)
+- ✅ JSON/JSONB support (auto-detection by dialect)
+- ✅ Unit tests (170+ tests passing)
 
 **Remaining Phases:**
 - [ ] Integration tests with PostgreSQL

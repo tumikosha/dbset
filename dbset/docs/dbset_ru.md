@@ -13,6 +13,7 @@
 - **Connection Pooling** - эффективное переиспользование соединений через SQLAlchemy
 - **Dict-based фильтрация** - Pythonic query API с продвинутыми фильтрами
 - **Автоматический вывод типов** - автоматическое сопоставление Python → SQLAlchemy типов
+- **Поддержка JSON/JSONB** - нативная работа с вложенными dict и list (JSONB для PostgreSQL)
 - **Поддержка UUID** - первичные ключи на основе UUID
 - **Управление индексами** - автоматическое и ручное создание индексов
 - **Транзакции** - поддержка транзакций через контекстные менеджеры
@@ -1040,6 +1041,8 @@ idx_name = await table.create_index(
 | `bytes` | `Text()` | Может быть улучшено для binary типов |
 | `datetime` | `DateTime()` | |
 | `date` | `Date()` | |
+| `dict` | `JSON()` или `JSONB()` | JSONB для PostgreSQL, JSON для остальных |
+| `list` | `JSON()` или `JSONB()` | JSONB для PostgreSQL, JSON для остальных |
 | `None` | `String(255)` | Nullable по умолчанию |
 
 **Примеры:**
@@ -1066,6 +1069,82 @@ types = TypeInference.infer_types_from_row(row)
 TypeInference.merge_types(Integer(), Float())   # Float()
 TypeInference.merge_types(String(50), String(100))  # String(100)
 TypeInference.merge_types(Date(), DateTime())   # DateTime()
+
+# JSON типы (авто-определение диалекта)
+TypeInference.infer_type({'key': 'value'})                    # JSON()
+TypeInference.infer_type({'key': 'value'}, dialect='postgresql')  # JSONB()
+TypeInference.infer_type([1, 2, 3], dialect='postgresql')     # JSONB()
+```
+
+---
+
+## Поддержка JSON/JSONB
+
+DBSet автоматически обрабатывает вложенные Python dict и list, сохраняя их как JSON колонки. Для PostgreSQL автоматически используется оптимизированный тип **JSONB**.
+
+### Вставка JSON данных
+
+```python
+# Вставка данных с вложенными структурами - ручная сериализация не нужна!
+await users.insert({
+    'name': 'John',
+    'metadata': {
+        'role': 'admin',
+        'permissions': ['read', 'write', 'delete']
+    },
+    'tags': ['python', 'sql', 'async'],
+    'orders': [
+        {'product': 'Book', 'qty': 2, 'price': 29.99},
+        {'product': 'Pen', 'qty': 5, 'price': 4.99}
+    ]
+})
+
+# Данные сохраняются как:
+# - PostgreSQL: JSONB колонки (быстрые запросы, индексируемые)
+# - SQLite/другие: JSON колонки
+```
+
+### Запросы JSON данных
+
+```python
+# Данные возвращаются как Python dict/list
+user = await users.find_one(name='John')
+print(user['metadata']['role'])       # 'admin'
+print(user['orders'][0]['product'])   # 'Book'
+print(user['tags'])                   # ['python', 'sql', 'async']
+```
+
+### Маппинг типов по базам данных
+
+| Python тип | PostgreSQL | SQLite | Другие |
+|------------|------------|--------|--------|
+| `dict` | JSONB | JSON | JSON |
+| `list` | JSONB | JSON | JSON |
+
+### Почему JSONB для PostgreSQL?
+
+- **Бинарный формат хранения** - быстрее чтение и запросы
+- **Поддержка GIN индексов** - быстрые запросы по содержимому JSON
+- **Нативные операторы** - `->`, `->>`, `@>`, `?` для запросов внутри JSON
+- **Без дублирующих ключей** - автоматическая дедупликация
+- **Без сохранения пробелов** - более компактное хранение
+
+### Продвинутое: SQLAlchemy JSON запросы
+
+Для сложных JSON запросов используйте SQLAlchemy напрямую:
+
+```python
+from sqlalchemy import select
+
+users_table = await users.table
+
+# PostgreSQL JSONB операторы через SQLAlchemy
+stmt = select(users_table).where(
+    users_table.c.metadata['role'].astext == 'admin'
+)
+
+async for row in db.query(stmt):
+    print(row)
 ```
 
 ---
@@ -1325,7 +1404,8 @@ except ConnectionError as e:
 - ✅ Управление схемой (DDL операции)
 - ✅ Async API (AsyncDatabase, AsyncTable)
 - ✅ Sync API (Database, Table)
-- ✅ Unit тесты (63+ тестов)
+- ✅ Поддержка JSON/JSONB (авто-определение по диалекту)
+- ✅ Unit тесты (170+ тестов)
 
 **Оставшиеся фазы:**
 - [ ] Интеграционные тесты с PostgreSQL

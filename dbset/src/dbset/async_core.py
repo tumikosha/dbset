@@ -381,6 +381,11 @@ class AsyncTable:
         """Get table name."""
         return self._name
 
+    @property
+    def _dialect(self) -> str:
+        """Get database dialect name (e.g., 'postgresql', 'sqlite')."""
+        return self._db._engine.dialect.name
+
     async def insert(
         self,
         row: dict[str, Any],
@@ -434,7 +439,7 @@ class AsyncTable:
 
         # Infer types and ensure columns exist
         if ensure:
-            inferred_types = TypeInference.infer_types_from_row(row)
+            inferred_types = TypeInference.infer_types_from_row(row, dialect=self._dialect)
             # Override with user-provided types
             if types:
                 inferred_types.update(types)
@@ -494,7 +499,7 @@ class AsyncTable:
 
         # Infer types from first row and ensure columns
         if ensure:
-            inferred_types = TypeInference.infer_types_from_row(rows[0])
+            inferred_types = TypeInference.infer_types_from_row(rows[0], dialect=self._dialect)
             await self._schema.ensure_columns(table, inferred_types)
 
             # Clear cached table and reload
@@ -738,7 +743,7 @@ class AsyncTable:
             )
 
             # Infer types and ensure columns exist
-            inferred_types = TypeInference.infer_types_from_row(row)
+            inferred_types = TypeInference.infer_types_from_row(row, dialect=self._dialect)
             if types:
                 inferred_types.update(types)
             await self._schema.ensure_columns(table, inferred_types)
@@ -812,7 +817,7 @@ class AsyncTable:
             )
 
             # Infer types from first row and ensure columns exist
-            inferred_types = TypeInference.infer_types_from_row(rows[0])
+            inferred_types = TypeInference.infer_types_from_row(rows[0], dialect=self._dialect)
             if types:
                 inferred_types.update(types)
             await self._schema.ensure_columns(table, inferred_types)
