@@ -203,6 +203,61 @@ async def test_upsert():
     await db.close()
 
 
+async def test_upsert_with_only_key_fields():
+    """Test upsert when record contains only key fields (no fields to update)."""
+    db = await async_connect('sqlite+aiosqlite:///:memory:')
+    users = db['users']
+
+    # First insert a row
+    await users.insert({'email': 'john@example.com', 'name': 'John', 'age': 30})
+
+    # Upsert with only the key field - should not fail with SQL syntax error
+    # This tests the fix for: UPDATE table SET WHERE ... (empty SET clause)
+    pk = await users.upsert({'email': 'john@example.com'}, keys=['email'])
+
+    # Verify the row still exists and is unchanged
+    found = await users.find_one(email='john@example.com')
+    assert found is not None
+    assert found['name'] == 'John'
+    assert found['age'] == 30
+
+    # Verify count is still 1
+    count = await users.count()
+    assert count == 1
+
+    await db.close()
+
+
+async def test_upsert_many_with_only_key_fields():
+    """Test upsert_many when records contain only key fields."""
+    db = await async_connect('sqlite+aiosqlite:///:memory:')
+    urls = db['urls']
+
+    # First insert some rows
+    await urls.insert({'url': 'https://example1.com', 'status': 'active'})
+    await urls.insert({'url': 'https://example2.com', 'status': 'active'})
+
+    # Upsert_many with only key fields - should not fail
+    records = [
+        {'url': 'https://example1.com'},
+        {'url': 'https://example2.com'},
+        {'url': 'https://example3.com'},  # This one is new
+    ]
+    count = await urls.upsert_many(records, keys=['url'])
+    assert count == 3
+
+    # Verify existing rows are unchanged
+    found1 = await urls.find_one(url='https://example1.com')
+    assert found1['status'] == 'active'
+
+    # Verify new row was inserted (with only the url field)
+    found3 = await urls.find_one(url='https://example3.com')
+    assert found3 is not None
+    assert found3['url'] == 'https://example3.com'
+
+    await db.close()
+
+
 async def test_insert_many():
     """Test batch insert operation."""
     db = await async_connect('sqlite+aiosqlite:///:memory:')

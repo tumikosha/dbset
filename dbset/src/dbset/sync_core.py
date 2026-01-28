@@ -618,6 +618,10 @@ class Table:
             filters = {k: row[k] for k in keys if k in row}
             row = {k: v for k, v in row.items() if k not in keys}
 
+            # If row is empty after removing keys, nothing to update
+            if not row:
+                return 0
+
         where_clause = FilterBuilder.build(table, filters)
 
         if where_clause is None:
