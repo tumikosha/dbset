@@ -1,4 +1,5 @@
 """Schema management - DDL operations for auto-creating tables and columns."""
+from __future__ import annotations
 
 import asyncio
 import hashlib

@@ -1,4 +1,5 @@
 """SQL validation for read-only mode - integrates with TriggerAI sql_validator."""
+from __future__ import annotations
 
 from dbset.sql_validator import (
     SQLValidationError,

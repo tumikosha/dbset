@@ -41,6 +41,7 @@ Examples:
     >>> async for row in db.query(stmt):
     ...     print(row)
 """
+from __future__ import annotations
 
 from .async_core import AsyncDatabase, AsyncTable
 from .exceptions import (

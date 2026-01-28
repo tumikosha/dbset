@@ -1,4 +1,5 @@
 """Async core API - AsyncDatabase and AsyncTable classes built on SQLAlchemy async."""
+from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator

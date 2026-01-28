@@ -8,12 +8,13 @@ version = "1.0.0"
 description = "Thin wrapper on SQLAlchemy with async/await support - simplified database operations"
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 authors = [{name = "TriggerAI Team"}]
 keywords = ["database", "sqlalchemy", "async", "postgresql", "sqlite", "orm"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Framework :: AsyncIO",

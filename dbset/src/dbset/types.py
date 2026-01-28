@@ -1,4 +1,5 @@
 """Type inference system - Python types to SQLAlchemy types mapping."""
+from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal

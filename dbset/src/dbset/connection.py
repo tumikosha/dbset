@@ -1,4 +1,5 @@
 """Connection pooling and management for sync and async engines."""
+from __future__ import annotations
 
 from contextlib import asynccontextmanager, contextmanager
 from typing import AsyncIterator, Iterator

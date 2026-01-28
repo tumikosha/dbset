@@ -1,4 +1,5 @@
 """Exception hierarchy for AsyncDataset library."""
+from __future__ import annotations
 
 
 class DatasetError(Exception):

@@ -1,4 +1,5 @@
 """Query builder - translates dict-based filters to SQLAlchemy WHERE clauses."""
+from __future__ import annotations
 
 from typing import Any
 

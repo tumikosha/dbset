@@ -1,4 +1,5 @@
 """Sync core API - Database and Table classes built on SQLAlchemy sync."""
+from __future__ import annotations
 
 from contextlib import contextmanager
 from typing import Any, Iterator
