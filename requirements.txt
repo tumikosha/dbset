@@ -6,3 +6,4 @@ greenlet
 pytest>=9.0
 pytest-asyncio
 aiosqlite
+# asyncpg

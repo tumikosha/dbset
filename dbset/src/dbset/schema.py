@@ -226,15 +226,17 @@ class AsyncSchemaManager:
             SchemaError: If column addition fails
         """
         try:
-            # Get dialect for SQL generation
-            dialect = self._engine.dialect.name
-
             # Generate column definition SQL
             col = Column(column_name, column_type)
             col_type_sql = col.type.compile(dialect=self._engine.dialect)
 
+            # Quote identifiers properly for SQL safety (handles special chars like dashes)
+            preparer = self._engine.dialect.identifier_preparer
+            quoted_table = preparer.quote(table.name)
+            quoted_column = preparer.quote(column_name)
+
             # Generate ALTER TABLE statement
-            alter_sql = f"ALTER TABLE {table.name} ADD COLUMN {column_name} {col_type_sql}"
+            alter_sql = f"ALTER TABLE {quoted_table} ADD COLUMN {quoted_column} {col_type_sql}"
 
             async with self._engine.begin() as conn:
                 await conn.execute(DDL(alter_sql))
@@ -573,12 +575,17 @@ class SyncSchemaManager:
     ) -> None:
         """Add column to table (sync version)."""
         try:
-            # Get dialect for SQL generation
+            # Generate column definition SQL
             col = Column(column_name, column_type)
             col_type_sql = col.type.compile(dialect=self._engine.dialect)
 
+            # Quote identifiers properly for SQL safety (handles special chars like dashes)
+            preparer = self._engine.dialect.identifier_preparer
+            quoted_table = preparer.quote(table.name)
+            quoted_column = preparer.quote(column_name)
+
             # Generate ALTER TABLE statement
-            alter_sql = f"ALTER TABLE {table.name} ADD COLUMN {column_name} {col_type_sql}"
+            alter_sql = f"ALTER TABLE {quoted_table} ADD COLUMN {quoted_column} {col_type_sql}"
 
             with self._engine.begin() as conn:
                 conn.execute(DDL(alter_sql))
