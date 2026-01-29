@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbset"
-version = "1.0.4"
+version = "1.0.6"
 description = "Sync & Async-ready SQLAlchemy wrapper with autoschema support for simplified database operations"
 readme = "README.md"
 license = "Apache-2.0"
