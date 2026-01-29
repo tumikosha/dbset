@@ -139,6 +139,7 @@ Creates an asynchronous database connection.
 - `primary_key_type` (str | PrimaryKeyType): Primary key type ('integer', 'uuid')
 - `primary_key_column` (str): Primary key column name (default: 'id')
 - `pk_config` (PrimaryKeyConfig): Advanced primary key configuration
+- `text_index_prefix` (int): Prefix length for TEXT column indexes in MySQL/MariaDB (default: 255)
 
 **Returns:** `AsyncDatabase`
 
@@ -446,7 +447,7 @@ async for row in users.distinct('country', status='active'):
 
 #### Index Management
 
-##### `await table.create_index(columns, name=None, unique=False, **kwargs)`
+##### `await table.create_index(columns, name=None, unique=False, text_index_prefix=None, **kwargs)`
 
 Creates an index on specified columns.
 
@@ -454,6 +455,7 @@ Creates an index on specified columns.
 - `columns` (str | list[str]): Column or list of columns
 - `name` (str): Index name (optional, auto-generated)
 - `unique` (bool): Create unique index
+- `text_index_prefix` (int): Prefix length for TEXT columns in MySQL/MariaDB (uses database default if not specified)
 - `**kwargs`: Additional parameters (e.g., `postgresql_where`)
 
 **Returns:** Name of the created index
@@ -1005,6 +1007,29 @@ idx_name = await table.create_index(
 - Long names are truncated to 63 characters (PostgreSQL limit) with hash suffix
 - Custom names can be specified via the `name` parameter
 
+### MySQL/MariaDB TEXT Column Indexing
+
+MySQL/MariaDB requires a prefix length when creating indexes on TEXT columns. DBSet handles this automatically with a configurable prefix length.
+
+**Configuration:**
+
+```python
+# Default: 255 character prefix for TEXT column indexes
+db = await async_connect('mysql+aiomysql://localhost/mydb')
+
+# Custom prefix length at database level
+db = await async_connect(
+    'mysql+aiomysql://localhost/mydb',
+    text_index_prefix=191  # For utf8mb4 with 767 byte key limit
+)
+
+# Custom prefix length at table level
+users = db['users']
+await users.create_index('description', text_index_prefix=100)
+```
+
+**Note:** This setting only affects MySQL/MariaDB. PostgreSQL and SQLite handle TEXT indexes without prefix length.
+
 ### When to Use Indexes
 
 - Columns frequently used in WHERE conditions
@@ -1036,13 +1061,13 @@ Class for automatic SQLAlchemy type inference from Python values.
 | `float` | `Float()` | |
 | `Decimal` | `Numeric(p, s)` | Auto-calculated precision/scale |
 | `bool` | `Boolean()` | Checked before int (bool is int subclass) |
-| `str` | `String(255)` or `Text()` | Text for strings >255 chars |
+| `str` | `Text()` | Always TEXT for maximum flexibility |
 | `bytes` | `Text()` | May be improved for binary types |
 | `datetime` | `DateTime()` | |
 | `date` | `Date()` | |
 | `dict` | `JSON()` or `JSONB()` | JSONB for PostgreSQL, JSON for others |
 | `list` | `JSON()` or `JSONB()` | JSONB for PostgreSQL, JSON for others |
-| `None` | `String(255)` | Nullable by default |
+| `None` | `Text()` | Nullable by default |
 
 **Examples:**
 
@@ -1055,14 +1080,14 @@ TypeInference.infer_type(42)                    # Integer()
 TypeInference.infer_type(3.14)                  # Float()
 TypeInference.infer_type(Decimal('123.45'))     # Numeric(5, 2)
 TypeInference.infer_type(True)                  # Boolean()
-TypeInference.infer_type('hello')               # String(255)
+TypeInference.infer_type('hello')               # Text()
 TypeInference.infer_type('x' * 300)             # Text()
 TypeInference.infer_type(datetime.now())        # DateTime()
 
 # Infer types from row
 row = {'name': 'John', 'age': 30, 'active': True}
 types = TypeInference.infer_types_from_row(row)
-# {'name': String(255), 'age': Integer(), 'active': Boolean()}
+# {'name': Text(), 'age': Integer(), 'active': Boolean()}
 
 # Merge types (for multiple rows)
 TypeInference.merge_types(Integer(), Float())   # Float()

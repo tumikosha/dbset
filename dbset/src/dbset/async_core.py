@@ -40,6 +40,7 @@ class AsyncDatabase:
         read_only: bool = False,
         ensure_schema: bool = True,
         pk_config: PrimaryKeyConfig | None = None,
+        text_index_prefix: int = 255,
     ):
         """
         Initialize database connection.
@@ -52,6 +53,7 @@ class AsyncDatabase:
             read_only: If True, only SELECT queries allowed
             ensure_schema: If True, auto-create tables/columns
             pk_config: Primary key configuration for auto-created tables
+            text_index_prefix: Prefix length for TEXT column indexes (MySQL/MariaDB)
         """
         self._engine = engine
         self._metadata = metadata
@@ -60,6 +62,7 @@ class AsyncDatabase:
         self._read_only = read_only
         self._ensure_schema = ensure_schema
         self._pk_config = pk_config or PrimaryKeyConfig()
+        self._text_index_prefix = text_index_prefix
         self._tables: dict[str, 'AsyncTable'] = {}
 
     @classmethod
@@ -74,6 +77,7 @@ class AsyncDatabase:
         primary_key_type: str | PrimaryKeyType = PrimaryKeyType.INTEGER,
         primary_key_column: str = 'id',
         pk_config: PrimaryKeyConfig | None = None,
+        text_index_prefix: int = 255,
         **engine_kwargs,
     ) -> 'AsyncDatabase':
         """
@@ -90,6 +94,7 @@ class AsyncDatabase:
                              ('integer', 'uuid', or PrimaryKeyType enum)
             primary_key_column: Name of primary key column (default: 'id')
             pk_config: Advanced PK configuration (overrides primary_key_type/column)
+            text_index_prefix: Prefix length for TEXT column indexes in MySQL/MariaDB (default: 255)
             **engine_kwargs: Additional arguments for create_async_engine
 
         Returns:
@@ -164,6 +169,7 @@ class AsyncDatabase:
             read_only=read_only,
             ensure_schema=ensure_schema,
             pk_config=pk_config,
+            text_index_prefix=text_index_prefix,
         )
 
     def __getitem__(self, table_name: str) -> 'AsyncTable':
@@ -192,6 +198,7 @@ class AsyncDatabase:
             pool=self._pool,
             read_only=self._read_only,
             ensure_schema=self._ensure_schema,
+            text_index_prefix=self._text_index_prefix,
         )
 
         # Cache it
@@ -330,6 +337,7 @@ class AsyncTable:
         pool: AsyncConnectionPool,
         read_only: bool = False,
         ensure_schema: bool = True,
+        text_index_prefix: int = 255,
     ):
         """
         Initialize table wrapper.
@@ -341,6 +349,7 @@ class AsyncTable:
             pool: AsyncConnectionPool
             read_only: If True, only SELECT queries allowed
             ensure_schema: If True, auto-create table/columns
+            text_index_prefix: Prefix length for TEXT column indexes (MySQL/MariaDB)
         """
         self._db = db
         self._name = name
@@ -348,6 +357,7 @@ class AsyncTable:
         self._pool = pool
         self._read_only = read_only
         self._ensure_schema = ensure_schema
+        self._text_index_prefix = text_index_prefix
         self._table = None  # SQLAlchemy Table (lazy loaded)
 
     async def _get_table(self):
@@ -978,7 +988,11 @@ class AsyncTable:
             columns = [columns]
 
         table = await self._get_table()
-        return await self._schema.create_index(table, columns, name, unique, **kw)
+        return await self._schema.create_index(
+            table, columns, name, unique,
+            text_index_prefix=self._text_index_prefix,
+            **kw
+        )
 
     async def has_index(self, columns: str | list[str]) -> bool:
         """

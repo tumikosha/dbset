@@ -39,6 +39,7 @@ class Database:
         read_only: bool = False,
         ensure_schema: bool = True,
         pk_config: PrimaryKeyConfig | None = None,
+        text_index_prefix: int = 255,
     ):
         """
         Initialize database connection.
@@ -51,6 +52,7 @@ class Database:
             read_only: If True, only SELECT queries allowed
             ensure_schema: If True, auto-create tables/columns
             pk_config: Primary key configuration for auto-created tables
+            text_index_prefix: Prefix length for TEXT column indexes (MySQL/MariaDB)
         """
         self._engine = engine
         self._metadata = metadata
@@ -59,6 +61,7 @@ class Database:
         self._read_only = read_only
         self._ensure_schema = ensure_schema
         self._pk_config = pk_config or PrimaryKeyConfig()
+        self._text_index_prefix = text_index_prefix
         self._tables: dict[str, 'Table'] = {}
 
     @classmethod
@@ -73,6 +76,7 @@ class Database:
         primary_key_type: str | PrimaryKeyType = PrimaryKeyType.INTEGER,
         primary_key_column: str = 'id',
         pk_config: PrimaryKeyConfig | None = None,
+        text_index_prefix: int = 255,
         **engine_kwargs,
     ) -> 'Database':
         """
@@ -89,6 +93,7 @@ class Database:
                              ('integer', 'uuid', or PrimaryKeyType enum)
             primary_key_column: Name of primary key column (default: 'id')
             pk_config: Advanced PK configuration (overrides primary_key_type/column)
+            text_index_prefix: Prefix length for TEXT column indexes in MySQL/MariaDB (default: 255)
             **engine_kwargs: Additional arguments for create_engine
 
         Returns:
@@ -156,6 +161,7 @@ class Database:
             read_only=read_only,
             ensure_schema=ensure_schema,
             pk_config=pk_config,
+            text_index_prefix=text_index_prefix,
         )
 
     def __getitem__(self, table_name: str) -> 'Table':
@@ -184,6 +190,7 @@ class Database:
             pool=self._pool,
             read_only=self._read_only,
             ensure_schema=self._ensure_schema,
+            text_index_prefix=self._text_index_prefix,
         )
 
         # Cache it
@@ -309,6 +316,7 @@ class Table:
         pool: SyncConnectionPool,
         read_only: bool = False,
         ensure_schema: bool = True,
+        text_index_prefix: int = 255,
     ):
         """Initialize table wrapper."""
         self._db = db
@@ -317,6 +325,7 @@ class Table:
         self._pool = pool
         self._read_only = read_only
         self._ensure_schema = ensure_schema
+        self._text_index_prefix = text_index_prefix
         self._table = None  # SQLAlchemy Table (lazy loaded)
 
     def _get_table(self):
@@ -893,7 +902,11 @@ class Table:
             columns = [columns]
 
         table = self._get_table()
-        return self._schema.create_index(table, columns, name, unique, **kw)
+        return self._schema.create_index(
+            table, columns, name, unique,
+            text_index_prefix=self._text_index_prefix,
+            **kw
+        )
 
     def has_index(self, columns: str | list[str]) -> bool:
         """

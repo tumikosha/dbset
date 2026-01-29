@@ -32,8 +32,8 @@ class TypeInference:
     Used for automatic schema creation when inserting data.
     """
 
-    # String length threshold - strings longer than this become Text
-    STRING_LENGTH_THRESHOLD = 255
+    # Default prefix length for TEXT column indexes (used by MySQL/MariaDB)
+    TEXT_INDEX_PREFIX_LENGTH = 255
 
     @staticmethod
     def infer_type(
@@ -46,7 +46,7 @@ class TypeInference:
 
         Args:
             value: Python value to infer type from
-            max_string_length: Maximum string length before using Text (default: 255)
+            max_string_length: Deprecated, ignored. Kept for backward compatibility.
             dialect: Database dialect name (e.g., 'postgresql', 'sqlite')
                      Used to select optimal type (JSONB for PostgreSQL)
 
@@ -60,7 +60,7 @@ class TypeInference:
             >>> TypeInference.infer_type(42)
             Integer()
             >>> TypeInference.infer_type("hello")
-            String(255)
+            Text()
             >>> TypeInference.infer_type(True)
             Boolean()
             >>> TypeInference.infer_type({'key': 'value'}, dialect='postgresql')
@@ -68,12 +68,9 @@ class TypeInference:
             >>> TypeInference.infer_type([1, 2, 3], dialect='sqlite')
             JSON()
         """
-        if max_string_length is None:
-            max_string_length = TypeInference.STRING_LENGTH_THRESHOLD
-
-        # None values default to String (nullable)
+        # None values default to Text (nullable)
         if value is None:
-            return String(max_string_length)
+            return Text()
 
         # Boolean must be checked before int (bool is subclass of int in Python)
         if isinstance(value, bool):
@@ -99,11 +96,9 @@ class TypeInference:
         if isinstance(value, date):
             return Date()
 
-        # String types
+        # String types - always use Text for maximum flexibility
         if isinstance(value, str):
-            if len(value) > max_string_length:
-                return Text()
-            return String(max_string_length)
+            return Text()
 
         # Bytes - store as Text (can be enhanced later for binary types)
         if isinstance(value, bytes):

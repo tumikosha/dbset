@@ -140,6 +140,7 @@ await patients.insert({'name': 'Hacker'})  # ❌ Заблокировано!
 - `primary_key_type` (str | PrimaryKeyType): Тип первичного ключа ('integer', 'uuid')
 - `primary_key_column` (str): Имя колонки первичного ключа (default: 'id')
 - `pk_config` (PrimaryKeyConfig): Расширенная конфигурация первичного ключа
+- `text_index_prefix` (int): Длина префикса для индексов TEXT колонок в MySQL/MariaDB (default: 255)
 
 **Возвращает:** `AsyncDatabase`
 
@@ -447,7 +448,7 @@ async for row in users.distinct('country', status='active'):
 
 #### Управление индексами
 
-##### `await table.create_index(columns, name=None, unique=False, **kwargs)`
+##### `await table.create_index(columns, name=None, unique=False, text_index_prefix=None, **kwargs)`
 
 Создает индекс на указанных колонках.
 
@@ -455,6 +456,7 @@ async for row in users.distinct('country', status='active'):
 - `columns` (str | list[str]): Колонка или список колонок
 - `name` (str): Имя индекса (опционально, генерируется автоматически)
 - `unique` (bool): Создать уникальный индекс
+- `text_index_prefix` (int): Длина префикса для TEXT колонок в MySQL/MariaDB (использует значение по умолчанию базы данных, если не указано)
 - `**kwargs`: Дополнительные параметры (например, `postgresql_where`)
 
 **Возвращает:** Имя созданного индекса
@@ -1006,6 +1008,29 @@ idx_name = await table.create_index(
 - Длинные имена обрезаются до 63 символов (лимит PostgreSQL) с hash суффиксом
 - Кастомные имена можно указать через параметр `name`
 
+### Индексирование TEXT колонок в MySQL/MariaDB
+
+MySQL/MariaDB требует указания длины префикса при создании индексов на TEXT колонках. DBSet автоматически обрабатывает это с настраиваемой длиной префикса.
+
+**Конфигурация:**
+
+```python
+# По умолчанию: 255 символов префикса для TEXT колонок
+db = await async_connect('mysql+aiomysql://localhost/mydb')
+
+# Кастомная длина префикса на уровне базы данных
+db = await async_connect(
+    'mysql+aiomysql://localhost/mydb',
+    text_index_prefix=191  # Для utf8mb4 с лимитом ключа 767 байт
+)
+
+# Кастомная длина префикса на уровне таблицы
+users = db['users']
+await users.create_index('description', text_index_prefix=100)
+```
+
+**Примечание:** Эта настройка влияет только на MySQL/MariaDB. PostgreSQL и SQLite работают с TEXT индексами без указания длины префикса.
+
 ### Когда использовать индексы
 
 - Колонки, часто используемые в WHERE условиях
@@ -1037,13 +1062,13 @@ idx_name = await table.create_index(
 | `float` | `Float()` | |
 | `Decimal` | `Numeric(p, s)` | Автоматический расчет precision/scale |
 | `bool` | `Boolean()` | Проверяется до int (bool - подкласс int) |
-| `str` | `String(255)` или `Text()` | Text для строк >255 символов |
+| `str` | `Text()` | Всегда TEXT для максимальной гибкости |
 | `bytes` | `Text()` | Может быть улучшено для binary типов |
 | `datetime` | `DateTime()` | |
 | `date` | `Date()` | |
 | `dict` | `JSON()` или `JSONB()` | JSONB для PostgreSQL, JSON для остальных |
 | `list` | `JSON()` или `JSONB()` | JSONB для PostgreSQL, JSON для остальных |
-| `None` | `String(255)` | Nullable по умолчанию |
+| `None` | `Text()` | Nullable по умолчанию |
 
 **Примеры:**
 
@@ -1056,14 +1081,14 @@ TypeInference.infer_type(42)                    # Integer()
 TypeInference.infer_type(3.14)                  # Float()
 TypeInference.infer_type(Decimal('123.45'))     # Numeric(5, 2)
 TypeInference.infer_type(True)                  # Boolean()
-TypeInference.infer_type('hello')               # String(255)
+TypeInference.infer_type('hello')               # Text()
 TypeInference.infer_type('x' * 300)             # Text()
 TypeInference.infer_type(datetime.now())        # DateTime()
 
 # Вывод типов из строки
 row = {'name': 'John', 'age': 30, 'active': True}
 types = TypeInference.infer_types_from_row(row)
-# {'name': String(255), 'age': Integer(), 'active': Boolean()}
+# {'name': Text(), 'age': Integer(), 'active': Boolean()}
 
 # Слияние типов (для множественных строк)
 TypeInference.merge_types(Integer(), Float())   # Float()

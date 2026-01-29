@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     MetaData,
     Table,
+    Text,
     inspect,
 )
 from sqlalchemy.engine import Engine
@@ -328,6 +329,7 @@ class AsyncSchemaManager:
         columns: list[str],
         name: str | None = None,
         unique: bool = False,
+        text_index_prefix: int = 255,
         **kw: Any,
     ) -> str:
         """
@@ -338,6 +340,7 @@ class AsyncSchemaManager:
             columns: List of column names to index
             name: Custom index name (auto-generated if None)
             unique: Create unique index
+            text_index_prefix: Prefix length for TEXT columns (MySQL/MariaDB only)
             **kw: Additional SQLAlchemy Index kwargs (e.g., postgresql_where)
 
         Returns:
@@ -379,6 +382,18 @@ class AsyncSchemaManager:
 
             # Create Index object
             index_columns = [table.c[col_name] for col_name in columns]
+
+            # For MySQL/MariaDB: TEXT columns require prefix length for indexing
+            dialect_name = self._engine.dialect.name
+            if dialect_name in ('mysql', 'mariadb'):
+                mysql_length = {}
+                for col_name in columns:
+                    col = table.c[col_name]
+                    if isinstance(col.type, Text):
+                        mysql_length[col_name] = text_index_prefix
+                if mysql_length:
+                    kw['mysql_length'] = mysql_length
+
             index = Index(index_name, *index_columns, unique=unique, **kw)
 
             # Create index in database
@@ -664,6 +679,7 @@ class SyncSchemaManager:
         columns: list[str],
         name: str | None = None,
         unique: bool = False,
+        text_index_prefix: int = 255,
         **kw: Any,
     ) -> str:
         """
@@ -674,6 +690,7 @@ class SyncSchemaManager:
             columns: List of column names to index
             name: Custom index name (auto-generated if None)
             unique: Create unique index
+            text_index_prefix: Prefix length for TEXT columns (MySQL/MariaDB only)
             **kw: Additional SQLAlchemy Index kwargs
 
         Returns:
@@ -703,6 +720,18 @@ class SyncSchemaManager:
 
             # Create Index object
             index_columns = [table.c[col_name] for col_name in columns]
+
+            # For MySQL/MariaDB: TEXT columns require prefix length for indexing
+            dialect_name = self._engine.dialect.name
+            if dialect_name in ('mysql', 'mariadb'):
+                mysql_length = {}
+                for col_name in columns:
+                    col = table.c[col_name]
+                    if isinstance(col.type, Text):
+                        mysql_length[col_name] = text_index_prefix
+                if mysql_length:
+                    kw['mysql_length'] = mysql_length
+
             index = Index(index_name, *index_columns, unique=unique, **kw)
 
             # Create index in database

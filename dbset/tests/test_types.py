@@ -44,11 +44,10 @@ def test_infer_float():
 
 
 def test_infer_string():
-    """Test string type inference."""
-    # Short string -> String(255)
+    """Test string type inference - always Text."""
+    # Short string -> Text
     result = TypeInference.infer_type('hello')
-    assert isinstance(result, String)
-    assert result.length == 255
+    assert isinstance(result, Text)
 
     # Long string -> Text
     long_string = 'x' * 300
@@ -69,9 +68,9 @@ def test_infer_date():
 
 
 def test_infer_none():
-    """Test None type inference (defaults to String)."""
+    """Test None type inference (defaults to Text)."""
     result = TypeInference.infer_type(None)
-    assert isinstance(result, String)
+    assert isinstance(result, Text)
 
 
 def test_infer_bytes():
@@ -98,7 +97,7 @@ def test_infer_types_from_row():
 
     types = TypeInference.infer_types_from_row(row)
 
-    assert isinstance(types['name'], String)
+    assert isinstance(types['name'], Text)
     assert isinstance(types['age'], Integer)
     assert isinstance(types['active'], Boolean)
     assert isinstance(types['balance'], Float)
@@ -155,15 +154,15 @@ def test_merge_string_text():
     assert isinstance(result, Text)
 
 
-def test_custom_max_string_length():
-    """Test custom max string length threshold."""
+def test_max_string_length_deprecated():
+    """Test that max_string_length is deprecated and ignored - always Text."""
     short_string = 'x' * 50
 
-    # Default threshold (255)
+    # Always Text regardless of max_string_length parameter
     result = TypeInference.infer_type(short_string)
-    assert isinstance(result, String)
+    assert isinstance(result, Text)
 
-    # Custom threshold (30) - should use Text
+    # max_string_length is ignored (deprecated)
     result = TypeInference.infer_type(short_string, max_string_length=30)
     assert isinstance(result, Text)
 
@@ -230,13 +229,13 @@ def test_infer_types_from_row_with_json():
 
     # Without dialect -> JSON
     types = TypeInference.infer_types_from_row(row)
-    assert isinstance(types['name'], String)
+    assert isinstance(types['name'], Text)
     assert isinstance(types['metadata'], JSON)
     assert isinstance(types['tags'], JSON)
 
     # With PostgreSQL dialect -> JSONB
     types = TypeInference.infer_types_from_row(row, dialect='postgresql')
-    assert isinstance(types['name'], String)
+    assert isinstance(types['name'], Text)
     assert isinstance(types['metadata'], JSONB)
     assert isinstance(types['tags'], JSONB)
 

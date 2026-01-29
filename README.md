@@ -10,7 +10,7 @@ A Python library for simplified database operations, inspired by the original `d
 - **Read-Only Mode**: Built-in safety for marketing queries
 - **Connection Pooling**: Efficient connection reuse via SQLAlchemy
 - **Dict-Based Filtering**: Pythonic query API with advanced filters
-- **Type Inference**: Automatic Python → SQLAlchemy type mapping
+- **Type Inference**: Automatic Python → SQLAlchemy type mapping (TEXT for all strings)
 - **JSON/JSONB Support**: Native handling of nested dicts and lists (JSONB for PostgreSQL)
 
 ## Installation
