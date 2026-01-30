@@ -188,6 +188,60 @@ await users.upsert(
 )
 ```
 
+### Handling Non-Existent Keys
+
+The `keys` parameter in `update()`, `upsert()`, and `upsert_many()` supports graceful handling of non-existent columns, matching the `dataset` library behavior.
+
+**Why this matters:** When working with dynamic schemas, external data sources, or evolving codebases, your key columns might not always exist in the table. DBSet handles this gracefully instead of raising errors.
+
+#### Behavior Summary
+
+| Function | Some keys exist | All keys non-existent |
+|----------|-----------------|----------------------|
+| `upsert()` | INSERT new row (no match found) | INSERT new row |
+| `upsert_many()` | INSERT new rows | INSERT new rows |
+| `update()` | Update using valid keys only | Raises `QueryError` |
+
+#### upsert() with Non-Existent Keys
+
+When `keys` contains columns that don't exist in the table, the lookup query returns no match, causing an INSERT instead of UPDATE:
+
+```python
+# If 'nonexistent' column doesn't exist, this inserts a new row
+await users.upsert(
+    {'name': 'John', 'age': 31},
+    keys=['name', 'nonexistent']  # 'nonexistent' not in table → INSERT
+)
+
+# Even if 'name' exists and matches, the non-existent key causes no match
+# Result: New row inserted, not updated
+```
+
+**Use case:** Safe handling of schema mismatches between different environments or data versions.
+
+#### update() with Non-Existent Keys
+
+The `update()` function filters out non-existent keys and proceeds with valid ones:
+
+```python
+# With keys=['name', 'nonexistent'], only 'name' is used for WHERE clause
+count = users.update(
+    {'name': 'John', 'age': 99, 'nonexistent': 'val'},
+    keys=['name', 'nonexistent']  # 'nonexistent' ignored, uses name='John'
+)
+
+# If ALL keys are non-existent, raises QueryError (no valid WHERE clause)
+from dbset import QueryError
+try:
+    users.update({'age': 99}, keys=['foo', 'bar'])  # All keys invalid
+except QueryError as e:
+    print("Cannot update: no valid keys")  # ← This is raised
+```
+
+**Why the difference?**
+- `upsert()` has a fallback (INSERT), so it can safely proceed
+- `update()` without a WHERE clause would update ALL rows, which is dangerous
+
 ### Transactions
 
 ```python

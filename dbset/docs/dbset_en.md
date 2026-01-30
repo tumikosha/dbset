@@ -382,6 +382,19 @@ pk = await users.upsert(
 
 **Note:** With `ensure=True`, an index is automatically created on the `keys` columns for optimal performance.
 
+**Handling Non-Existent Keys:** If the `keys` parameter includes columns that don't exist in the table, upsert will insert a new row instead of updating. This matches the behavior of the `dataset` library and allows graceful handling of schema mismatches:
+
+```python
+# If 'nonexistent' column doesn't exist in the table,
+# this will INSERT a new row instead of updating
+pk = await users.upsert(
+    {'email': 'john@example.com', 'name': 'John'},
+    keys=['email', 'nonexistent']  # 'nonexistent' not in table → INSERT
+)
+```
+
+See the [Handling Non-Existent Keys](#handling-non-existent-keys) section for detailed behavior of `update()`, `upsert()`, and `upsert_many()`
+
 ##### `await table.upsert_many(rows, keys, chunk_size=1000, ensure=True)`
 
 Bulk upsert operation.
@@ -926,6 +939,124 @@ async def safe_operation():
     finally:
         await db.close()
 ```
+
+---
+
+## Handling Non-Existent Keys
+
+The `keys` parameter in `update()`, `upsert()`, and `upsert_many()` supports graceful handling of non-existent columns. This behavior matches the `dataset` library for compatibility and allows safe operation with dynamic schemas.
+
+### Why This Matters
+
+When working with:
+- **Dynamic schemas** - columns may be added or removed over time
+- **External data sources** - incoming data may reference columns that don't exist
+- **Evolving codebases** - key column names may change between versions
+- **Multi-tenant systems** - different tenants may have different schemas
+
+DBSet handles these scenarios gracefully instead of raising errors.
+
+### Behavior by Function
+
+| Function | Some keys exist | All keys non-existent |
+|----------|-----------------|----------------------|
+| `upsert()` | INSERT new row (no match found) | INSERT new row |
+| `upsert_many()` | INSERT new rows | INSERT new rows |
+| `update()` | Update using valid keys only | Raises `QueryError` |
+
+### upsert() Behavior
+
+When `keys` contains columns that don't exist in the table, the lookup query returns no match, causing an INSERT instead of UPDATE:
+
+```python
+# Initial data
+await users.insert({'name': 'John', 'age': 30})
+
+# Upsert with non-existent key 'tenant_id'
+# The query WHERE name='John' AND tenant_id=NULL finds no match
+await users.upsert(
+    {'name': 'John', 'age': 31, 'tenant_id': 'abc'},
+    keys=['name', 'tenant_id']  # 'tenant_id' doesn't exist → INSERT
+)
+
+# Result: 2 rows exist (original + new), not 1 updated row
+count = await users.count()  # Returns 2
+```
+
+**Rationale:** The non-existent key causes the lookup to include `NULL` for that column, which never matches existing rows. This is a safe default - it prevents accidental overwrites when schemas don't match.
+
+### upsert_many() Behavior
+
+Same as `upsert()` - non-existent keys cause INSERT for all rows:
+
+```python
+rows = [
+    {'email': 'a@test.com', 'name': 'A'},
+    {'email': 'b@test.com', 'name': 'B'},
+]
+
+# With non-existent 'region' key, all rows are inserted
+await users.upsert_many(rows, keys=['email', 'region'])
+```
+
+### update() Behavior
+
+The `update()` function filters out non-existent keys and proceeds with valid ones:
+
+```python
+# Setup
+await users.insert({'name': 'John', 'age': 30})
+
+# Update with mixed valid/invalid keys
+# Only 'name' is used for WHERE clause
+count = await users.update(
+    {'name': 'John', 'age': 99, 'nonexistent': 'val'},
+    keys=['name', 'nonexistent']  # 'nonexistent' filtered out
+)
+# Result: 1 row updated where name='John'
+```
+
+**When ALL keys are non-existent:**
+
+```python
+from dbset import QueryError
+
+# This raises QueryError - no valid WHERE clause possible
+try:
+    await users.update(
+        {'name': 'John', 'age': 99},
+        keys=['foo', 'bar']  # Neither exists
+    )
+except QueryError as e:
+    print("Cannot update: no valid keys for WHERE clause")
+```
+
+**Why the difference from upsert?**
+- `upsert()` has a safe fallback (INSERT), so it can proceed
+- `update()` without a WHERE clause would update ALL rows - this is dangerous and should be explicit
+
+### Best Practices
+
+1. **Validate keys before bulk operations** if you need strict behavior:
+   ```python
+   table_cols = {col.name for col in (await users.table).columns}
+   valid_keys = [k for k in keys if k in table_cols]
+   if not valid_keys:
+       raise ValueError("No valid key columns found")
+   ```
+
+2. **Use explicit column checks** when schema mismatch should be an error:
+   ```python
+   if not await users.has_column('tenant_id'):
+       raise SchemaError("Required column 'tenant_id' missing")
+   ```
+
+3. **Log filtered keys** for debugging in production:
+   ```python
+   import logging
+   # DBSet logs filtered keys at DEBUG level
+   logging.getLogger('dbset').setLevel(logging.DEBUG)
+   ```
 
 ---
 

@@ -624,7 +624,12 @@ class Table:
 
         # Build WHERE clause
         if keys:
-            filters = {k: row[k] for k in keys if k in row}
+            # Filter keys to only include columns that exist in the table
+            # This matches dataset behavior: non-existent keys are ignored
+            table_cols = {col.name for col in table.columns}
+            valid_keys = [k for k in keys if k in table_cols and k in row]
+
+            filters = {k: row[k] for k in valid_keys}
             row = {k: v for k, v in row.items() if k not in keys}
 
             # If row is empty after removing keys, nothing to update
@@ -678,6 +683,9 @@ class Table:
 
         ensure = ensure if ensure is not None else self._ensure_schema
 
+        # Store original keys for query - they may include non-existent columns
+        original_keys = keys
+
         # Ensure table, columns, and index exist if requested
         if ensure:
             # Get or create table
@@ -693,14 +701,21 @@ class Table:
                 inferred_types.update(types)
             self._schema.ensure_columns(table, inferred_types)
 
-            # Auto-create index on keys for performance
-            self.create_index(keys)
+            # Filter keys to only include columns that exist in the table (for index creation)
+            # After ensure_columns, columns from row + original table columns all exist
+            table_cols = {col.name for col in table.columns} | set(row.keys())
+            index_keys = [k for k in keys if k in table_cols]
+
+            # Auto-create index on valid keys for performance
+            if index_keys:
+                self.create_index(index_keys)
 
             # Clear cached table
             self._table = None
 
-        # Check if row exists
-        filters = {k: row[k] for k in keys}
+        # Check if row exists using original keys (with .get() for missing keys)
+        # This matches dataset behavior: non-existent keys cause query to fail/return None
+        filters = {k: row.get(k) for k in original_keys}
         try:
             existing = self.find_one(**filters)
         except QueryError:
@@ -767,13 +782,19 @@ class Table:
                 inferred_types.update(types)
             self._schema.ensure_columns(table, inferred_types)
 
-            # Auto-create index on keys for performance (once for batch)
-            self.create_index(keys)
+            # Filter keys to only include columns that exist in the table (for index creation)
+            # After ensure_columns, columns from row + original table columns all exist
+            table_cols = {col.name for col in table.columns} | set(rows[0].keys())
+            index_keys = [k for k in keys if k in table_cols]
+
+            # Auto-create index on valid keys for performance (once for batch)
+            if index_keys:
+                self.create_index(index_keys)
 
             # Clear cached table
             self._table = None
 
-        # Process each row (now fast with index!)
+        # Process each row (upsert handles non-existent keys gracefully)
         for row in rows:
             self.upsert(row, keys=keys, ensure=False, types=types)
 

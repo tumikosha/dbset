@@ -131,6 +131,56 @@ def test_update():
     db.close()
 
 
+def test_update_with_nonexistent_key_column():
+    """Test update with keys that include non-existent columns.
+
+    This matches dataset library behavior: non-existent keys are ignored,
+    and update proceeds with valid keys only.
+    """
+    db = connect('sqlite:///:memory:')
+    users = db['users']
+
+    # Insert initial row
+    users.insert({'name': 'John', 'age': 30})
+
+    # Update with keys=['name', 'nonexistent'] - 'nonexistent' should be ignored
+    count = users.update(
+        {'name': 'John', 'age': 99, 'nonexistent': 'val'},
+        keys=['name', 'nonexistent']
+    )
+    assert count == 1
+
+    # Verify update happened
+    found = users.find_one(name='John')
+    assert found['age'] == 99
+
+    db.close()
+
+
+def test_update_with_all_nonexistent_keys():
+    """Test update when ALL keys are non-existent columns.
+
+    Should raise QueryError because no valid WHERE clause can be built.
+    """
+    db = connect('sqlite:///:memory:')
+    users = db['users']
+
+    # Insert initial row
+    users.insert({'name': 'John', 'age': 30})
+
+    # Update with keys=['foo', 'bar'] - all non-existent
+    # Since no valid keys, filters will be empty, should raise error
+    from dbset import QueryError
+    import pytest
+    with pytest.raises(QueryError):
+        users.update(
+            {'name': 'John', 'age': 99, 'foo': 'a', 'bar': 'b'},
+            keys=['foo', 'bar']
+        )
+
+    db.close()
+
+
 def test_delete():
     """Test delete operation."""
     db = connect('sqlite:///:memory:')
@@ -197,6 +247,62 @@ def test_upsert():
     db.close()
 
 
+def test_upsert_with_nonexistent_key_column():
+    """Test upsert with keys that include non-existent columns.
+
+    This matches dataset library behavior: when keys contain columns that
+    don't exist in the table, the query finds no match and inserts a new row.
+    """
+    db = connect('sqlite:///:memory:')
+    users = db['users']
+
+    # Insert initial row
+    users.insert({'name': 'John', 'age': 30})
+    assert users.count() == 1
+
+    # Upsert with keys=['name', 'nonexistent'] - should INSERT (not update)
+    # because 'nonexistent' column doesn't exist, causing no match
+    users.upsert({'name': 'John', 'age': 99}, keys=['name', 'nonexistent'])
+
+    # Should have 2 rows now (original + new insert)
+    assert users.count() == 2
+
+    # Both rows should exist
+    rows = list(users.find(name='John'))
+    assert len(rows) == 2
+    ages = {row['age'] for row in rows}
+    assert ages == {30, 99}
+
+    db.close()
+
+
+def test_upsert_with_all_nonexistent_keys():
+    """Test upsert when ALL keys are non-existent columns.
+
+    Should insert a new row every time since no columns match.
+    """
+    db = connect('sqlite:///:memory:')
+    users = db['users']
+
+    # Insert initial row
+    users.insert({'name': 'John', 'age': 30})
+    assert users.count() == 1
+
+    # Upsert with keys=['foo', 'bar'] - all non-existent
+    users.upsert({'name': 'Jane', 'age': 25}, keys=['foo', 'bar'])
+
+    # Should have 2 rows
+    assert users.count() == 2
+
+    # Upsert again with same data but non-existent keys - should insert again
+    users.upsert({'name': 'Jane', 'age': 25}, keys=['foo', 'bar'])
+
+    # Should have 3 rows
+    assert users.count() == 3
+
+    db.close()
+
+
 def test_upsert_with_only_key_fields():
     """Test upsert when record contains only key fields (no fields to update)."""
     db = connect('sqlite:///:memory:')
@@ -248,6 +354,74 @@ def test_upsert_many_with_only_key_fields():
     found3 = urls.find_one(url='https://example3.com')
     assert found3 is not None
     assert found3['url'] == 'https://example3.com'
+
+    db.close()
+
+
+def test_upsert_many_with_nonexistent_key_column():
+    """Test upsert_many with keys that include non-existent columns.
+
+    This matches dataset library behavior: when keys contain columns that
+    don't exist in the table, upsert_many inserts new rows instead of updating.
+    """
+    db = connect('sqlite:///:memory:')
+    users = db['users']
+
+    # Insert initial rows
+    users.insert({'name': 'John', 'age': 30})
+    users.insert({'name': 'Jane', 'age': 25})
+    assert users.count() == 2
+
+    # Upsert_many with keys=['name', 'nonexistent'] - should INSERT all rows
+    # because 'nonexistent' column doesn't exist
+    records = [
+        {'name': 'John', 'age': 99},
+        {'name': 'Jane', 'age': 88},
+    ]
+    count = users.upsert_many(records, keys=['name', 'nonexistent'])
+    assert count == 2
+
+    # Should have 4 rows now (2 original + 2 new inserts)
+    assert users.count() == 4
+
+    # Original rows should still exist with original values
+    johns = list(users.find(name='John'))
+    assert len(johns) == 2
+    ages = {row['age'] for row in johns}
+    assert ages == {30, 99}
+
+    db.close()
+
+
+def test_upsert_many_with_all_nonexistent_keys():
+    """Test upsert_many when ALL keys are non-existent columns.
+
+    Should insert all rows every time since no columns match.
+    """
+    db = connect('sqlite:///:memory:')
+    users = db['users']
+
+    # Insert initial row
+    users.insert({'name': 'John', 'age': 30})
+    assert users.count() == 1
+
+    # Upsert_many with keys=['foo', 'bar'] - all non-existent
+    records = [
+        {'name': 'Jane', 'age': 25},
+        {'name': 'Bob', 'age': 35},
+    ]
+    count = users.upsert_many(records, keys=['foo', 'bar'])
+    assert count == 2
+
+    # Should have 3 rows
+    assert users.count() == 3
+
+    # Upsert_many again with same data - should insert again
+    count = users.upsert_many(records, keys=['foo', 'bar'])
+    assert count == 2
+
+    # Should have 5 rows
+    assert users.count() == 5
 
     db.close()
 
