@@ -12,6 +12,7 @@ A Python library for simplified database operations, inspired by the original `d
 - **Dict-Based Filtering**: Pythonic query API with advanced filters
 - **Type Inference**: Automatic Python → SQLAlchemy type mapping (TEXT for all strings)
 - **JSON/JSONB Support**: Native handling of nested dicts and lists (JSONB for PostgreSQL)
+- **Vector Support**: Store and search embeddings with similarity search (cosine, L2, inner product)
 
 ## Installation
 
@@ -21,7 +22,8 @@ pip install 'dbset[asyncpg]'         # + async PostgreSQL driver
 pip install 'dbset[psycopg2]'        # + sync PostgreSQL driver
 pip install 'dbset[postgres]'        # + all PostgreSQL drivers
 pip install 'dbset[aiosqlite]'       # + async SQLite driver
-pip install 'dbset[all]'             # all drivers
+pip install 'dbset[vector]'            # + numpy for vector support
+pip install 'dbset[all]'             # all drivers + numpy
 pip install 'dbset[dev]'             # development dependencies
 ```
 
@@ -32,11 +34,15 @@ pip install 'dbset[dev]'             # development dependencies
 - `asyncpg>=0.29.0` (async PostgreSQL driver, optional)
 - `psycopg2-binary>=2.9.9` (sync PostgreSQL driver, optional)
 - `aiosqlite>=0.19.0` (async SQLite driver, optional)
+- `numpy>=1.24.0` (for vector type inference from numpy arrays, optional)
 
 ## Quick Start
     db = connect('sqlite:///:memory:')
+    # db = await async_connect('sqlite+aiosqlite:///:memory:')
     # db = connect('sqlite:///db.sqlite')
-    # db = connect('postgresql://localhost/mydb')
+    # db = connect('postgresql://user:password@localhost:5432/database_name')
+    # db = connect('postgresql+asyncpg://user:password@localhost:5432/database_name',)
+
     users = db['users']                                 # Get table
     pk = users.insert({'name': 'John', 'age': 30})      # Insert data 
     for user in users.find(age={'>=': 18}):             # Find with filters
@@ -299,6 +305,111 @@ print(user['orders'][0]['product'])  # 'Book'
 - Native operators: `->`, `->>`, `@>`, `?`
 - No duplicate keys, no whitespace preservation
 
+### Vector Support (Embeddings & Similarity Search)
+
+DBset supports storing and searching vector embeddings for AI/ML workloads such as semantic search, RAG, and recommendation systems. Vectors are stored efficiently per database dialect and can be queried with similarity search.
+
+#### Inserting Vectors
+
+```python
+from dbset import connect, Vector
+
+db = connect('sqlite:///:memory:')
+items = db['items']
+
+# Insert with explicit vector type (list[float])
+items.insert(
+    {'name': 'doc1', 'embedding': '[0.1, 0.2, 0.3]'},
+    types={'embedding': Vector(dim=3)}
+)
+
+# Insert numpy arrays (type auto-inferred, requires numpy)
+import numpy as np
+items.insert({'name': 'doc2', 'embedding': np.array([0.4, 0.5, 0.6])})
+```
+
+#### Similarity Search
+
+Use `find_similar()` to find the closest vectors by distance:
+
+```python
+# Find 5 most similar items by cosine distance
+for row in items.find_similar('embedding', [0.1, 0.2, 0.3], metric='cosine', limit=5):
+    print(row['name'], row['_distance'])
+
+# L2 (Euclidean) distance
+for row in items.find_similar('embedding', [0.1, 0.2, 0.3], metric='l2', limit=5):
+    print(row['name'], row['_distance'])
+
+# Inner product
+for row in items.find_similar('embedding', [0.1, 0.2, 0.3], metric='inner_product'):
+    print(row['name'], row['_distance'])
+
+# With distance threshold (only return results within threshold)
+for row in items.find_similar('embedding', [0.1, 0.2, 0.3], metric='cosine', threshold=0.5):
+    print(row['name'], row['_distance'])
+
+# With additional filters
+for row in items.find_similar('embedding', [0.1, 0.2, 0.3], category='science'):
+    print(row['name'], row['_distance'])
+
+# Without distance in results
+for row in items.find_similar('embedding', [0.1, 0.2, 0.3], include_distance=False):
+    print(row['name'])
+```
+
+#### Async API
+
+```python
+from dbset import async_connect, Vector
+import numpy as np
+
+db = await async_connect('sqlite+aiosqlite:///:memory:')
+items = db['items']
+
+await items.insert({'name': 'doc1', 'embedding': np.array([0.1, 0.2, 0.3])})
+
+async for row in items.find_similar('embedding', [0.1, 0.2, 0.3], metric='cosine', limit=5):
+    print(row['name'], row['_distance'])
+
+await db.close()
+```
+
+#### Vector Indexes (PostgreSQL with pgvector)
+
+On PostgreSQL with the pgvector extension, you can create HNSW or IVFFlat indexes for fast approximate nearest-neighbor search:
+
+```python
+# Create HNSW index (recommended for most use cases)
+items.create_vector_index('embedding', method='hnsw', metric='cosine')
+
+# Create IVFFlat index with custom parameters
+items.create_vector_index('embedding', method='ivfflat', metric='l2', lists=100)
+
+# Async version
+await items.create_vector_index('embedding', method='hnsw', metric='cosine')
+```
+
+#### Database-Specific Storage
+
+| Database | Storage Type | Similarity Search | Index Support |
+|----------|-------------|-------------------|---------------|
+| SQLite | TEXT (JSON string) | Python-side computation | No |
+| PostgreSQL | VECTOR(dim) via pgvector | Native operators (`<->`, `<=>`, `<#>`) | HNSW, IVFFlat |
+| MySQL 9+ | VECTOR | `VECTOR_DISTANCE()` function | No |
+
+#### Distance Metrics
+
+| Metric | Constant | Description | Lower = More Similar |
+|--------|----------|-------------|---------------------|
+| Cosine | `DistanceMetric.COSINE` | Cosine distance (1 - cosine similarity) | Yes |
+| L2 | `DistanceMetric.L2` | Euclidean distance | Yes |
+| Inner Product | `DistanceMetric.INNER_PRODUCT` | Negative dot product | Yes |
+
+**Notes:**
+- numpy is optional. Without it, insert vectors as JSON strings and `find_similar()` works with `list[float]`.
+- For SQLite, similarity search fetches all rows and computes distances in Python. This works well for small-to-medium datasets. For large-scale vector search, use PostgreSQL with pgvector.
+
 ### Index Management
 
 AsyncDataset automatically manages indexes for optimal performance.
@@ -447,6 +558,7 @@ dataset/
 ├── schema.py             # Schema management (DDL operations)
 ├── query.py              # FilterBuilder (dict → SQLAlchemy WHERE)
 ├── types.py              # TypeInference (Python → SQLAlchemy types)
+├── vector.py             # Vector type, serialization, distance computation
 ├── validators.py         # ReadOnlyValidator (SQL safety)
 ├── connection.py         # Connection pooling
 └── exceptions.py         # Exception hierarchy
@@ -553,7 +665,8 @@ def import_customers(csv_path: str):
 - ✅ Async API (AsyncDatabase, AsyncTable)
 - ✅ Sync API (Database, Table)
 - ✅ JSON/JSONB support (auto-detection by dialect)
-- ✅ Unit tests (170+ tests passing)
+- ✅ Vector support (embeddings, similarity search, pgvector integration)
+- ✅ Unit tests (230+ tests passing)
 
 **Remaining Phases:**
 - [ ] Integration tests with PostgreSQL

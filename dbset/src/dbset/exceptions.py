@@ -67,3 +67,8 @@ class QueryError(DatasetError):
 class TypeInferenceError(DatasetError):
     """Raised when type inference fails."""
     pass
+
+
+class VectorError(DatasetError):
+    """Raised for vector-specific errors (dimension mismatch, unsupported operations)."""
+    pass

@@ -23,6 +23,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeEngine
 
 from .exceptions import TypeInferenceError
+from .vector import Vector
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None
+    HAS_NUMPY = False
 
 
 class TypeInference:
@@ -103,6 +111,14 @@ class TypeInference:
         # Bytes - store as Text (can be enhanced later for binary types)
         if isinstance(value, bytes):
             return Text()
+
+        # numpy.ndarray -> Vector(dim=len(value))
+        if HAS_NUMPY and isinstance(value, np.ndarray):
+            if value.ndim != 1:
+                raise TypeInferenceError(
+                    f"Only 1D numpy arrays can be stored as vectors, got {value.ndim}D array"
+                )
+            return Vector(dim=len(value))
 
         # JSON types (dict, list) - use JSONB for PostgreSQL, JSON for others
         if isinstance(value, (dict, list)):
@@ -218,6 +234,11 @@ class TypeInference:
         """
         # Same type - return first (with special handling for parametrized types)
         if type(type1) == type(type2):
+            # For Vector, keep same dim or set to None if different
+            if isinstance(type1, Vector) and isinstance(type2, Vector):
+                if type1.dim == type2.dim:
+                    return type1
+                return Vector(dim=None)
             # For String, take the larger length
             if isinstance(type1, String) and isinstance(type2, String):
                 if type1.length is None or type2.length is None:

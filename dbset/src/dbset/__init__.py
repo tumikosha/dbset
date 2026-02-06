@@ -55,12 +55,14 @@ from .exceptions import (
     TransactionError,
     TypeInferenceError,
     ValidationError,
+    VectorError,
 )
 from .sync_core import Database, Table
 from .types import PrimaryKeyConfig, PrimaryKeyType
+from .vector import DistanceMetric, Vector
 
-__version__ = "0.1.0"
-__author__ = "TriggerAI Team"
+__version__ = "1.0.8"
+__author__ = "Vecaslav Kunitki"
 
 
 # Convenience functions for creating database connections
@@ -213,6 +215,9 @@ __all__ = [
     # Primary Key Configuration
     "PrimaryKeyType",
     "PrimaryKeyConfig",
+    # Vector Support
+    "Vector",
+    "DistanceMetric",
     # Exceptions
     "DatasetError",
     "ConnectionError",
@@ -224,4 +229,5 @@ __all__ = [
     "SchemaError",
     "QueryError",
     "TypeInferenceError",
+    "VectorError",
 ]

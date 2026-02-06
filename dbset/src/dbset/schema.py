@@ -21,6 +21,7 @@ from sqlalchemy.types import TypeEngine
 
 from .exceptions import ColumnNotFoundError, SchemaError, TableNotFoundError
 from .types import PrimaryKeyConfig, TypeInference
+from .vector import Vector
 
 
 class AsyncSchemaManager:
@@ -231,6 +232,10 @@ class AsyncSchemaManager:
             # Generate column definition SQL
             col = Column(column_name, column_type)
             col_type_sql = col.type.compile(dialect=self._engine.dialect)
+
+            # Vector columns: use TEXT for SQLite (pgvector/MySQL handle VECTOR natively)
+            if isinstance(column_type, Vector) and self._engine.dialect.name == 'sqlite':
+                col_type_sql = 'TEXT'
 
             # Quote identifiers properly for SQL safety (handles special chars like dashes)
             preparer = self._engine.dialect.identifier_preparer
@@ -594,6 +599,10 @@ class SyncSchemaManager:
             # Generate column definition SQL
             col = Column(column_name, column_type)
             col_type_sql = col.type.compile(dialect=self._engine.dialect)
+
+            # Vector columns: use TEXT for SQLite (pgvector/MySQL handle VECTOR natively)
+            if isinstance(column_type, Vector) and self._engine.dialect.name == 'sqlite':
+                col_type_sql = 'TEXT'
 
             # Quote identifiers properly for SQL safety (handles special chars like dashes)
             preparer = self._engine.dialect.identifier_preparer

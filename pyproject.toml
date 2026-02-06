@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dbset"
 version = "1.0.8"
-description = "Sync & Async-ready SQLAlchemy wrapper with autoschema support for simplified database operations"
+description = "Sync & Async-ready SQLAlchemy wrapper with autoschema support for simplified database operations(+vectors)"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
@@ -31,8 +31,9 @@ asyncpg = ["asyncpg>=0.29.0"]
 psycopg2 = ["psycopg2-binary>=2.9.9"]
 aiosqlite = ["aiosqlite>=0.19.0"]
 postgres = ["asyncpg>=0.29.0", "psycopg2-binary>=2.9.9"]
-all = ["asyncpg>=0.29.0", "psycopg2-binary>=2.9.9", "aiosqlite>=0.19.0"]
-dev = ["pytest>=8.0,<9.0", "pytest-asyncio>=0.23.0,<1.0.0", "aiosqlite>=0.19.0"]
+vector = ["numpy>=1.24.0"]
+all = ["asyncpg>=0.29.0", "psycopg2-binary>=2.9.9", "aiosqlite>=0.19.0", "numpy>=1.24.0"]
+dev = ["pytest>=8.0,<9.0", "pytest-asyncio>=0.23.0,<1.0.0", "aiosqlite>=0.19.0", "numpy>=1.24.0"]
 
 [tool.setuptools.packages.find]
 where = ["dbset/src"]

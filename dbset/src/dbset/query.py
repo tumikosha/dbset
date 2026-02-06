@@ -8,6 +8,9 @@ from sqlalchemy.sql.elements import BooleanClauseList, ColumnElement
 
 from .exceptions import QueryError
 
+# Vector distance operator names
+_VECTOR_DISTANCE_OPS = frozenset({'cosine_distance', 'l2_distance', 'max_inner_product'})
+
 
 class FilterBuilder:
     """
@@ -46,6 +49,9 @@ class FilterBuilder:
         'is': lambda col, val: col.is_(val),  # For NULL checks
         'is_not': lambda col, val: col.is_not(val),
         'between': lambda col, val: col.between(val[0], val[1]),
+        'cosine_distance': None,  # Handled specially in build()
+        'l2_distance': None,  # Handled specially in build()
+        'max_inner_product': None,  # Handled specially in build()
     }
 
     @staticmethod
@@ -135,6 +141,31 @@ class FilterBuilder:
                                 f"{operator.upper()} operator requires list/tuple, "
                                 f"got: {type(op_value).__name__}"
                             )
+
+                    # Handle vector distance operators
+                    if operator in _VECTOR_DISTANCE_OPS:
+                        if not isinstance(op_value, (list, tuple)) or len(op_value) != 2:
+                            raise QueryError(
+                                f"{operator} requires [query_vector, threshold], "
+                                f"got: {op_value}"
+                            )
+                        query_vec, threshold = op_value
+                        if not isinstance(query_vec, (list, tuple)):
+                            raise QueryError(
+                                f"{operator} query_vector must be a list, "
+                                f"got: {type(query_vec).__name__}"
+                            )
+                        # Vector distance filtering is handled by find_similar() or
+                        # Python-side computation, not as SQL WHERE clause.
+                        # Store as metadata for the caller to interpret.
+                        from .vector import compute_distance, DistanceMetric
+                        metric_map = {
+                            'cosine_distance': DistanceMetric.COSINE,
+                            'l2_distance': DistanceMetric.L2,
+                            'max_inner_product': DistanceMetric.INNER_PRODUCT,
+                        }
+                        # Skip adding SQL clause - vector filtering is handled separately
+                        continue
 
                     try:
                         clause = FilterBuilder.OPERATORS[operator](column, op_value)

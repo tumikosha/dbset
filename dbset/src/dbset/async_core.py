@@ -4,15 +4,30 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from sqlalchemy import MetaData, delete, insert, select, update, func
+from sqlalchemy import MetaData, delete, insert, select, text, update, func
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from .connection import AsyncConnectionPool, create_pool_config
-from .exceptions import ReadOnlyError, QueryError, TableNotFoundError
+from .exceptions import ReadOnlyError, QueryError, TableNotFoundError, VectorError
 from .query import FilterBuilder
 from .schema import AsyncSchemaManager
 from .types import PrimaryKeyConfig, PrimaryKeyType, TypeInference
 from .validators import ReadOnlyValidator
+from .vector import (
+    DistanceMetric,
+    Vector,
+    compute_distance,
+    deserialize_vector,
+    serialize_vector,
+    vector_distance_sql,
+)
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    np = None
+    HAS_NUMPY = False
 
 
 class AsyncDatabase:
@@ -460,6 +475,9 @@ class AsyncTable:
             self._table = None
             table = await self._schema.get_table(self._name, ensure_exists=False)
 
+        # Preprocess row (serialize vectors)
+        row = self._preprocess_row(row)
+
         # Insert row
         stmt = insert(table).values(**row)
 
@@ -516,6 +534,9 @@ class AsyncTable:
             # Clear cached table and reload
             self._table = None
             table = await self._schema.get_table(self._name, ensure_exists=False)
+
+        # Preprocess rows (serialize vectors)
+        rows = [self._preprocess_row(r) for r in rows]
 
         # Insert in chunks
         total = 0
@@ -1052,3 +1073,166 @@ class AsyncTable:
 
         table = await self._get_table()
         return await self._schema.index_exists(table, columns)
+
+    def _preprocess_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        """
+        Preprocess a row before insertion, serializing vector values.
+
+        Args:
+            row: Dictionary of column_name -> value
+
+        Returns:
+            New dictionary with vector values serialized
+        """
+        result = {}
+        for key, value in row.items():
+            if HAS_NUMPY and isinstance(value, np.ndarray):
+                result[key] = serialize_vector(value, self._dialect)
+            else:
+                result[key] = value
+        return result
+
+    async def find_similar(
+        self,
+        column: str,
+        query_vector: Any,
+        metric: str = DistanceMetric.COSINE,
+        limit: int = 10,
+        threshold: float | None = None,
+        include_distance: bool = True,
+        **filters,
+    ) -> AsyncIterator[dict]:
+        """
+        Find rows similar to query vector, ordered by distance.
+
+        Args:
+            column: Name of the vector column
+            query_vector: Query vector (list[float] or numpy array)
+            metric: Distance metric ('cosine', 'l2', 'inner_product')
+            limit: Maximum number of results
+            threshold: Maximum distance threshold (None for no filter)
+            include_distance: If True, include '_distance' key in results
+            **filters: Additional column filters
+
+        Yields:
+            Rows as dictionaries, ordered by distance (closest first).
+            Includes '_distance' key if include_distance=True.
+
+        Examples:
+            >>> async for row in table.find_similar('embedding', [0.1, 0.2, 0.3]):
+            ...     print(row['name'], row['_distance'])
+        """
+        table = await self._get_table()
+
+        # Normalize query vector to list
+        if HAS_NUMPY and isinstance(query_vector, np.ndarray):
+            query_vector = query_vector.tolist()
+
+        dialect_name = self._dialect
+        dist_expr, order_dir = vector_distance_sql(column, query_vector, metric, dialect_name)
+
+        if dist_expr == "__python_distance__":
+            # SQLite fallback: fetch all rows and compute distance in Python
+            stmt = select(table)
+            where_clause = FilterBuilder.build(table, filters) if filters else None
+            if where_clause is not None:
+                stmt = stmt.where(where_clause)
+
+            async with self._pool.connect() as conn:
+                result = await conn.execute(stmt)
+                rows_with_distance = []
+                for row in result:
+                    row_dict = dict(row._mapping)
+                    vec_value = deserialize_vector(row_dict.get(column))
+                    if vec_value is None:
+                        continue
+                    dist = compute_distance(query_vector, vec_value, metric)
+                    if threshold is not None and dist > threshold:
+                        continue
+                    if include_distance:
+                        row_dict['_distance'] = dist
+                    rows_with_distance.append((dist, row_dict))
+
+                rows_with_distance.sort(key=lambda x: x[0])
+                for _, row_dict in rows_with_distance[:limit]:
+                    yield row_dict
+        else:
+            # PostgreSQL/MySQL: use native vector distance
+            distance_col = text(dist_expr).label('_distance')
+            stmt = select(table, distance_col)
+
+            where_clause = FilterBuilder.build(table, filters) if filters else None
+            if where_clause is not None:
+                stmt = stmt.where(where_clause)
+
+            if threshold is not None:
+                stmt = stmt.where(text(f"{dist_expr} <= :threshold").bindparams(threshold=threshold))
+
+            order_clause = text(dist_expr).asc() if order_dir == "ASC" else text(dist_expr).desc()
+            stmt = stmt.order_by(order_clause).limit(limit)
+
+            async with self._pool.connect() as conn:
+                result = await conn.execute(stmt)
+                for row in result:
+                    row_dict = dict(row._mapping)
+                    if not include_distance:
+                        row_dict.pop('_distance', None)
+                    yield row_dict
+
+    async def create_vector_index(
+        self,
+        column: str,
+        method: str = 'hnsw',
+        metric: str = DistanceMetric.COSINE,
+        **params,
+    ) -> str:
+        """
+        Create vector similarity search index (PostgreSQL only with pgvector).
+
+        Args:
+            column: Vector column name
+            method: Index method ('hnsw' or 'ivfflat')
+            metric: Distance metric for index ops class
+            **params: Additional index parameters (e.g., m=16, ef_construction=64)
+
+        Returns:
+            Index name
+
+        Raises:
+            VectorError: If dialect does not support vector indexes
+        """
+        if self._dialect != 'postgresql':
+            raise VectorError(
+                f"Vector indexes are only supported on PostgreSQL with pgvector, "
+                f"current dialect: {self._dialect}"
+            )
+
+        ops_map = {
+            DistanceMetric.COSINE: 'vector_cosine_ops',
+            DistanceMetric.L2: 'vector_l2_ops',
+            DistanceMetric.INNER_PRODUCT: 'vector_ip_ops',
+        }
+        ops_class = ops_map.get(metric, 'vector_cosine_ops')
+
+        index_name = f"idx_{self._name}_{column}_{method}_{metric}"
+
+        table = await self._get_table()
+        preparer = self._db._engine.dialect.identifier_preparer
+        quoted_table = preparer.quote(table.name)
+        quoted_column = preparer.quote(column)
+
+        with_clause = ""
+        if params:
+            with_parts = [f"{k} = {v}" for k, v in params.items()]
+            with_clause = f" WITH ({', '.join(with_parts)})"
+
+        create_sql = (
+            f"CREATE INDEX IF NOT EXISTS {index_name} ON {quoted_table} "
+            f"USING {method} ({quoted_column} {ops_class}){with_clause}"
+        )
+
+        async with self._pool.acquire() as conn:
+            from sqlalchemy import DDL
+            await conn.execute(DDL(create_sql))
+
+        return index_name
