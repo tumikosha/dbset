@@ -706,9 +706,12 @@ class Table:
             table_cols = {col.name for col in table.columns} | set(row.keys())
             index_keys = [k for k in keys if k in table_cols]
 
-            # Auto-create index on valid keys for performance
+            # Get fresh table from schema (metadata is up-to-date after ensure_columns)
+            fresh_table = self._schema.get_table(self._name, ensure_exists=False)
+
+            # Auto-create index on valid keys for performance, bypassing stale cache
             if index_keys:
-                self.create_index(index_keys)
+                self.create_index(index_keys, table=fresh_table)
 
             # Clear cached table
             self._table = None
@@ -787,9 +790,12 @@ class Table:
             table_cols = {col.name for col in table.columns} | set(rows[0].keys())
             index_keys = [k for k in keys if k in table_cols]
 
-            # Auto-create index on valid keys for performance (once for batch)
+            # Get fresh table from schema (metadata is up-to-date after ensure_columns)
+            fresh_table = self._schema.get_table(self._name, ensure_exists=False)
+
+            # Auto-create index on valid keys for performance (once for batch), bypassing stale cache
             if index_keys:
-                self.create_index(index_keys)
+                self.create_index(index_keys, table=fresh_table)
 
             # Clear cached table
             self._table = None
@@ -877,6 +883,7 @@ class Table:
         columns: str | list[str],
         name: str | None = None,
         unique: bool = False,
+        table=None,
         **kw,
     ) -> str:
         """
@@ -922,7 +929,8 @@ class Table:
         if isinstance(columns, str):
             columns = [columns]
 
-        table = self._get_table()
+        if table is None:
+            table = self._get_table()
         return self._schema.create_index(
             table, columns, name, unique,
             text_index_prefix=self._text_index_prefix,
