@@ -61,7 +61,7 @@ from .sync_core import Database, Table
 from .types import PrimaryKeyConfig, PrimaryKeyType
 from .vector import DistanceMetric, Vector
 
-__version__ = "1.0.8"
+__version__ = "1.0.12"
 __author__ = "Vecaslav Kunitki"
 
 

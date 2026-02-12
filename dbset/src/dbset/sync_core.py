@@ -4,7 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from sqlalchemy import Engine, MetaData, create_engine, delete, func, insert, select, update
+from sqlalchemy import Engine, MetaData, asc, create_engine, delete, desc, func, insert, literal_column, select, text, update
 
 from .connection import SyncConnectionPool, create_pool_config
 from .exceptions import QueryError, ReadOnlyError, TableNotFoundError, VectorError
@@ -1006,6 +1006,8 @@ class Table:
         for key, value in row.items():
             if HAS_NUMPY and isinstance(value, np.ndarray):
                 result[key] = serialize_vector(value, self._dialect)
+            elif isinstance(value, list) and TypeInference._is_vector_list(value):
+                result[key] = serialize_vector(value, self._dialect)
             else:
                 result[key] = value
         return result
@@ -1076,7 +1078,7 @@ class Table:
                     yield row_dict
         else:
             # PostgreSQL/MySQL: use native vector distance
-            distance_col = text(dist_expr).label('_distance')
+            distance_col = literal_column(dist_expr).label('_distance')
             stmt = select(table, distance_col)
 
             where_clause = FilterBuilder.build(table, filters) if filters else None
@@ -1086,7 +1088,7 @@ class Table:
             if threshold is not None:
                 stmt = stmt.where(text(f"{dist_expr} <= :threshold").bindparams(threshold=threshold))
 
-            order_clause = text(dist_expr).asc() if order_dir == "ASC" else text(dist_expr).desc()
+            order_clause = asc(text(dist_expr)) if order_dir == "ASC" else desc(text(dist_expr))
             stmt = stmt.order_by(order_clause).limit(limit)
 
             with self._pool.connect() as conn:

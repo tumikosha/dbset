@@ -12,7 +12,7 @@ A Python library for simplified database operations, inspired by the original `d
 - **Dict-Based Filtering**: Pythonic query API with advanced filters
 - **Type Inference**: Automatic Python → SQLAlchemy type mapping (TEXT for all strings)
 - **JSON/JSONB Support**: Native handling of nested dicts and lists (JSONB for PostgreSQL)
-- **Vector Support**: Store and search embeddings with similarity search (cosine, L2, inner product)
+- **Vector Support**: Store and search embeddings with auto-detection from Python lists (no numpy required)
 
 ## Installation
 
@@ -298,6 +298,10 @@ print(user['orders'][0]['product'])  # 'Book'
 |-------------|------------|--------|-------|
 | `dict` | JSONB | JSON | JSON |
 | `list` | JSONB | JSON | JSON |
+| `list` (≥64 numeric) | VECTOR(dim) | TEXT | VECTOR(dim) |
+| `numpy.ndarray` | VECTOR(dim) | TEXT | VECTOR(dim) |
+
+**Note:** Lists with ≥64 numeric elements are automatically detected as vectors, not JSON.
 
 **Why JSONB for PostgreSQL?**
 - Binary storage format - faster reads
@@ -314,19 +318,46 @@ DBset supports storing and searching vector embeddings for AI/ML workloads such 
 ```python
 from dbset import connect, Vector
 
-db = connect('sqlite:///:memory:')
+db = connect('postgresql://user:password@localhost/mydb')
 items = db['items']
 
-# Insert with explicit vector type (list[float])
+# Auto-detection: Lists with ≥64 numeric elements are automatically inferred as vectors
+# No numpy required - plain Python lists work directly
+embedding = [0.1, 0.2, ...] * 128  # 128-dim embedding from your ML model
+items.insert({'name': 'doc1', 'embedding': embedding})  # Auto-inferred as Vector(128)
+
+# Insert numpy arrays (also auto-inferred)
+import numpy as np
+items.insert({'name': 'doc2', 'embedding': np.array([0.4, 0.5, 0.6] * 100)})
+
+# Full numpy workflow example
+import numpy as np
+
+# Simulate embeddings from a model (e.g., sentence-transformers)
+embeddings = np.random.randn(3, 768).astype(np.float32)  # 3 docs, 768-dim
+
+# Insert - numpy arrays auto-detected as Vector(768)
+for i, emb in enumerate(embeddings):
+    items.insert({'name': f'doc{i}', 'embedding': emb})
+
+# Search with numpy query vector
+query_vec = np.random.randn(768).astype(np.float32)
+for row in items.find_similar('embedding', query_vec, limit=5):
+    print(row['name'], row['_distance'])
+
+# Explicit type for short vectors (< 64 elements)
 items.insert(
-    {'name': 'doc1', 'embedding': '[0.1, 0.2, 0.3]'},
+    {'name': 'doc3', 'embedding': '[0.1, 0.2, 0.3]'},
     types={'embedding': Vector(dim=3)}
 )
-
-# Insert numpy arrays (type auto-inferred, requires numpy)
-import numpy as np
-items.insert({'name': 'doc2', 'embedding': np.array([0.4, 0.5, 0.6])})
 ```
+
+**Automatic Vector Detection:**
+- Lists with **≥64 numeric elements** (int or float) are automatically detected as vectors
+- `numpy.ndarray` (1D) is also auto-detected as Vector with dimension inferred from array length
+- No need for numpy or explicit `types=` parameter for typical ML embeddings (128, 256, 512, 768, 1024, etc.)
+- Vectors are serialized correctly for each database dialect (pgvector format for PostgreSQL)
+- For short vectors (< 64 elements), use explicit `types={'column': Vector(dim=N)}`
 
 #### Similarity Search
 
@@ -407,7 +438,8 @@ await items.create_vector_index('embedding', method='hnsw', metric='cosine')
 | Inner Product | `DistanceMetric.INNER_PRODUCT` | Negative dot product | Yes |
 
 **Notes:**
-- numpy is optional. Without it, insert vectors as JSON strings and `find_similar()` works with `list[float]`.
+- **numpy is fully optional.** Plain Python lists with ≥64 numeric elements are automatically detected as vectors. No JSON strings or explicit types needed for typical ML embeddings.
+- `find_similar()` accepts both `list[float]` and numpy arrays as query vectors.
 - For SQLite, similarity search fetches all rows and computes distances in Python. This works well for small-to-medium datasets. For large-scale vector search, use PostgreSQL with pgvector.
 
 ### Index Management

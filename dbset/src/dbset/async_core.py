@@ -4,7 +4,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from sqlalchemy import MetaData, delete, insert, select, text, update, func
+from sqlalchemy import MetaData, asc, delete, desc, insert, literal_column, select, text, update, func
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from .connection import AsyncConnectionPool, create_pool_config
@@ -1088,6 +1088,8 @@ class AsyncTable:
         for key, value in row.items():
             if HAS_NUMPY and isinstance(value, np.ndarray):
                 result[key] = serialize_vector(value, self._dialect)
+            elif isinstance(value, list) and TypeInference._is_vector_list(value):
+                result[key] = serialize_vector(value, self._dialect)
             else:
                 result[key] = value
         return result
@@ -1158,7 +1160,7 @@ class AsyncTable:
                     yield row_dict
         else:
             # PostgreSQL/MySQL: use native vector distance
-            distance_col = text(dist_expr).label('_distance')
+            distance_col = literal_column(dist_expr).label('_distance')
             stmt = select(table, distance_col)
 
             where_clause = FilterBuilder.build(table, filters) if filters else None
@@ -1168,7 +1170,7 @@ class AsyncTable:
             if threshold is not None:
                 stmt = stmt.where(text(f"{dist_expr} <= :threshold").bindparams(threshold=threshold))
 
-            order_clause = text(dist_expr).asc() if order_dir == "ASC" else text(dist_expr).desc()
+            order_clause = asc(text(dist_expr)) if order_dir == "ASC" else desc(text(dist_expr))
             stmt = stmt.order_by(order_clause).limit(limit)
 
             async with self._pool.connect() as conn:

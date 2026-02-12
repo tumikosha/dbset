@@ -120,6 +120,10 @@ class TypeInference:
                 )
             return Vector(dim=len(value))
 
+        # List of floats (embeddings) -> Vector
+        if isinstance(value, list) and TypeInference._is_vector_list(value):
+            return Vector(dim=len(value))
+
         # JSON types (dict, list) - use JSONB for PostgreSQL, JSON for others
         if isinstance(value, (dict, list)):
             if dialect == 'postgresql':
@@ -130,6 +134,41 @@ class TypeInference:
         raise TypeInferenceError(
             f"Cannot infer SQLAlchemy type for Python type: {type(value).__name__}"
         )
+
+    @staticmethod
+    def _is_vector_list(value: list, min_length: int = 64) -> bool:
+        """
+        Check if a list looks like a vector/embedding.
+
+        A vector-like list is:
+        - Non-empty
+        - Has at least min_length elements (default 64, typical embedding size)
+        - All elements are numeric (int or float)
+
+        Args:
+            value: List to check
+            min_length: Minimum length to consider as vector (default 64)
+
+        Returns:
+            True if list looks like a vector, False otherwise
+
+        Examples:
+            >>> TypeInference._is_vector_list([0.1, 0.2, 0.3])
+            False  # Too short
+            >>> TypeInference._is_vector_list([0.1] * 128)
+            True
+            >>> TypeInference._is_vector_list([{'a': 1}])
+            False  # Not numeric
+        """
+        if not value or len(value) < min_length:
+            return False
+
+        # Check first few elements are numeric (optimization: don't check all)
+        for item in value[:10]:
+            if not isinstance(item, (int, float)):
+                return False
+
+        return True
 
     @staticmethod
     def _calculate_decimal_precision(value: Decimal) -> tuple[int | None, int | None]:
