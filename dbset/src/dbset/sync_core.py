@@ -663,6 +663,7 @@ class Table:
             raise QueryError("UPDATE requires WHERE clause (filters or keys)")
 
         # Build UPDATE statement
+        row = self._preprocess_row(row)  # serialize vectors
         stmt = update(table).where(where_clause).values(**row)
 
         # Execute

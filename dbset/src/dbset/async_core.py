@@ -728,6 +728,7 @@ class AsyncTable:
             raise QueryError("UPDATE requires WHERE clause (filters or keys)")
 
         # Build UPDATE statement
+        row = self._preprocess_row(row)  # serialize vectors for asyncpg
         stmt = update(table).where(where_clause).values(**row)
 
         # Execute
