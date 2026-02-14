@@ -21,6 +21,8 @@ from .vector import (
     serialize_vector,
     vector_distance_sql,
 )
+from .fts import FTSManager
+from .hybrid import fuse_results, FusionMethod
 
 try:
     import numpy as np
@@ -587,7 +589,7 @@ class AsyncTable:
         table = await self._get_table()
 
         # Build WHERE clause
-        where_clause = FilterBuilder.build(table, filters)
+        where_clause = FilterBuilder.build(table, filters, dialect=self._dialect)
 
         # Build SELECT statement
         stmt = select(table)
@@ -662,7 +664,7 @@ class AsyncTable:
         table = await self._get_table()
 
         # Build WHERE clause
-        where_clause = FilterBuilder.build(table, filters)
+        where_clause = FilterBuilder.build(table, filters, dialect=self._dialect)
 
         # Build COUNT statement
         stmt = select(func.count()).select_from(table)
@@ -722,7 +724,7 @@ class AsyncTable:
             if not row:
                 return 0
 
-        where_clause = FilterBuilder.build(table, filters)
+        where_clause = FilterBuilder.build(table, filters, dialect=self._dialect)
 
         if where_clause is None:
             raise QueryError("UPDATE requires WHERE clause (filters or keys)")
@@ -923,7 +925,7 @@ class AsyncTable:
         table = await self._get_table()
 
         # Build WHERE clause
-        where_clause = FilterBuilder.build(table, filters)
+        where_clause = FilterBuilder.build(table, filters, dialect=self._dialect)
 
         # Build DELETE statement
         stmt = delete(table).where(where_clause)
@@ -963,7 +965,7 @@ class AsyncTable:
         table = await self._get_table()
 
         # Build WHERE clause
-        where_clause = FilterBuilder.build(table, filters)
+        where_clause = FilterBuilder.build(table, filters, dialect=self._dialect)
 
         # Build SELECT DISTINCT statement
         selected_columns = [table.c[col] for col in columns]
@@ -1137,7 +1139,7 @@ class AsyncTable:
         if dist_expr == "__python_distance__":
             # SQLite fallback: fetch all rows and compute distance in Python
             stmt = select(table)
-            where_clause = FilterBuilder.build(table, filters) if filters else None
+            where_clause = FilterBuilder.build(table, filters, dialect=self._dialect) if filters else None
             if where_clause is not None:
                 stmt = stmt.where(where_clause)
 
@@ -1164,7 +1166,7 @@ class AsyncTable:
             distance_col = literal_column(dist_expr).label('_distance')
             stmt = select(table, distance_col)
 
-            where_clause = FilterBuilder.build(table, filters) if filters else None
+            where_clause = FilterBuilder.build(table, filters, dialect=self._dialect) if filters else None
             if where_clause is not None:
                 stmt = stmt.where(where_clause)
 
@@ -1239,3 +1241,206 @@ class AsyncTable:
             await conn.execute(DDL(create_sql))
 
         return index_name
+
+    async def create_fts_index(
+        self,
+        columns: str | list[str],
+        language: str = 'english',
+    ) -> str:
+        """
+        Create full-text search index for BM25 text search.
+
+        Args:
+            columns: Column name(s) to index. Supports JSONB paths like 'metadata.field'
+            language: Language for stemming (default: 'english')
+
+        Returns:
+            Index name
+
+        Examples:
+            >>> # Single column
+            >>> await table.create_fts_index('title')
+
+            >>> # Multiple columns including JSONB
+            >>> await table.create_fts_index(['title', 'metadata.description'])
+        """
+        if isinstance(columns, str):
+            columns = [columns]
+
+        pk_col = self._db._pk_config.column_name
+
+        async with self._pool.acquire() as conn:
+            return await FTSManager.create_fts_index_async(
+                conn,
+                self._name,
+                columns,
+                self._dialect,
+                language=language,
+                pk_column=pk_col,
+            )
+
+    async def has_fts_index(self, columns: str | list[str]) -> bool:
+        """
+        Check if FTS index exists for specified columns.
+
+        Args:
+            columns: Column name(s) to check
+
+        Returns:
+            True if FTS index exists
+
+        Examples:
+            >>> if not await table.has_fts_index('title'):
+            ...     await table.create_fts_index('title')
+        """
+        if isinstance(columns, str):
+            columns = [columns]
+
+        async with self._pool.connect() as conn:
+            return await FTSManager.has_fts_index_async(
+                conn,
+                self._name,
+                columns,
+                self._dialect,
+            )
+
+    async def hybrid_search(
+        self,
+        vector_column: str,
+        text_column: str | list[str],
+        query_vector: Any,
+        query_text: str,
+        *,
+        limit: int = 10,
+        vector_weight: float = 0.5,
+        fusion: str = 'rrf',
+        rrf_k: int = 60,
+        ensure: bool = False,
+        language: str = 'english',
+        vector_metric: str = DistanceMetric.COSINE,
+        include_scores: bool = True,
+        **filters,
+    ) -> AsyncIterator[dict]:
+        """
+        Hybrid search combining BM25 text search and vector similarity.
+
+        Uses Reciprocal Rank Fusion (RRF) or Linear weighted combination
+        to merge results from both search methods.
+
+        Args:
+            vector_column: Name of the vector embedding column
+            text_column: Text column(s) for BM25 search. Supports JSONB paths.
+            query_vector: Query embedding vector (list or numpy array)
+            query_text: Text query for BM25 search
+            limit: Maximum number of results (default: 10)
+            vector_weight: Weight for vector results in linear fusion (0.0-1.0)
+            fusion: Fusion method - 'rrf' (default) or 'linear'
+            rrf_k: K parameter for RRF (default: 60)
+            ensure: If True, create FTS index if not exists
+            language: Language for text stemming (default: 'english')
+            vector_metric: Distance metric for vector search
+            include_scores: Include '_score' field in results (default: True)
+            **filters: Additional column filters (supports JSONB dot notation)
+
+        Yields:
+            Rows as dictionaries with '_score' field (if include_scores=True)
+
+        Examples:
+            >>> # Simple hybrid search
+            >>> async for row in table.hybrid_search(
+            ...     'embedding', 'title',
+            ...     query_vector=[0.1, 0.2, 0.3],
+            ...     query_text='machine learning',
+            ...     limit=10
+            ... ):
+            ...     print(row['title'], row['_score'])
+
+            >>> # With JSONB columns and filters
+            >>> async for row in table.hybrid_search(
+            ...     'embedding',
+            ...     ['title', 'metadata.description'],
+            ...     query_vector=[0.1, 0.2, 0.3],
+            ...     query_text='python tutorial',
+            ...     ensure=True,
+            ...     **{'metadata.category': 'programming'}
+            ... ):
+            ...     print(row)
+        """
+        # Normalize text_column to list
+        if isinstance(text_column, str):
+            text_columns = [text_column]
+        else:
+            text_columns = list(text_column)
+
+        # Normalize query vector
+        if HAS_NUMPY and isinstance(query_vector, np.ndarray):
+            query_vector = query_vector.tolist()
+
+        pk_col = self._db._pk_config.column_name
+
+        # Ensure FTS index exists if requested
+        if ensure:
+            has_fts = await self.has_fts_index(text_columns)
+            if not has_fts:
+                await self.create_fts_index(text_columns, language=language)
+
+        # Fetch more results than needed for fusion (we need overlap)
+        search_limit = limit * 3
+
+        # Execute BM25 search
+        async with self._pool.connect() as conn:
+            bm25_results = await FTSManager.fts_search_async(
+                conn,
+                self._name,
+                text_columns,
+                query_text,
+                self._dialect,
+                limit=search_limit,
+                language=language,
+                pk_column=pk_col,
+            )
+
+        # Execute vector search - collect results
+        vector_results = []
+        async for row in self.find_similar(
+            vector_column,
+            query_vector,
+            metric=vector_metric,
+            limit=search_limit,
+            include_distance=True,
+            **filters,
+        ):
+            doc_id = row.get(pk_col)
+            distance = row.get('_distance', 0.0)
+            vector_results.append((doc_id, distance))
+
+        # Fuse results
+        fused = fuse_results(
+            vector_results,
+            bm25_results,
+            method=fusion,
+            vector_weight=vector_weight,
+            rrf_k=rrf_k,
+        )
+
+        # Fetch full rows for top results
+        top_ids = [doc_id for doc_id, _ in fused[:limit]]
+        scores = {doc_id: score for doc_id, score in fused[:limit]}
+
+        if not top_ids:
+            return
+
+        # Fetch rows by IDs (applying filters to ensure consistency)
+        table = await self._get_table()
+        yielded_count = 0
+
+        for doc_id in top_ids:
+            if yielded_count >= limit:
+                break
+            # Apply filters when fetching to ensure consistency
+            row = await self.find_one(**{pk_col: doc_id, **filters})
+            if row:
+                if include_scores:
+                    row['_score'] = scores.get(doc_id, 0.0)
+                yield row
+                yielded_count += 1

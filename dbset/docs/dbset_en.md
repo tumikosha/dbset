@@ -1302,6 +1302,284 @@ async for row in db.query(stmt):
     print(row)
 ```
 
+### JSONB Filtering Operators
+
+DBSet supports advanced JSONB operators for filtering arrays and objects.
+
+#### Array Containment (`@>`, `?|`, `?&`)
+
+```python
+# Data: tags = ['ai', 'ml', 'python']
+
+# Contains single value
+posts.find(tags={'@>': 'ai'})
+# SQL: tags @> '["ai"]'::jsonb
+
+# Contains ALL values (AND logic)
+posts.find(tags={'@>': ['ai', 'ml']})
+# SQL: tags @> '["ai", "ml"]'::jsonb
+
+# Contains ANY value (OR logic)
+posts.find(tags={'?|': ['ai', 'ml', 'data']})
+# SQL: tags ?| array['ai', 'ml', 'data']
+
+# Readable aliases
+posts.find(tags={'jsonb_any': ['ai', 'ml']})  # same as ?|
+posts.find(tags={'jsonb_all': ['ai', 'ml']})  # same as ?&
+```
+
+#### Object Dot Notation
+
+```python
+# Data: metadata = {'category': 'tech', 'author': {'name': 'John'}}
+
+# Simple field access
+posts.find(**{'metadata.category': 'tech'})
+# SQL: metadata->>'category' = 'tech'
+
+# Nested field access
+posts.find(**{'metadata.author.name': 'John'})
+# SQL: metadata #>> '{author,name}' = 'John'
+
+# With comparison operators
+posts.find(**{'metadata.views': {'>=': 1000}})
+```
+
+#### Object Containment
+
+```python
+# Check if JSONB object contains key-value
+posts.find(metadata={'@>': {'category': 'tech'}})
+# SQL: metadata @> '{"category": "tech"}'::jsonb
+```
+
+#### Supported JSONB Operators
+
+| Operator | Syntax | Description |
+|----------|--------|-------------|
+| `@>` | `tags={'@>': 'ai'}` | Contains ALL (AND) |
+| `<@` | `tags={'<@': ['a','b']}` | Contained in value |
+| `?|` | `tags={'?|': ['ai','ml']}` | Contains ANY (OR) |
+| `?&` | `tags={'?&': ['ai','ml']}` | Contains ALL keys |
+| `jsonb_contains` | Alias for `@>` | |
+| `jsonb_any` | Alias for `?|` | |
+| `jsonb_all` | Alias for `?&` | |
+| dot notation | `{'meta.field': 'val'}` | Nested field access |
+
+#### Database Support
+
+| Database | Array ANY | Array ALL | Object Access |
+|----------|-----------|-----------|---------------|
+| PostgreSQL | `?|` native | `@>` / `?&` | `->>`/`#>>` |
+| MySQL | `JSON_CONTAINS` OR | `JSON_CONTAINS` AND | `JSON_EXTRACT` |
+| SQLite | `json_each` EXISTS | `json_each` EXISTS | `json_extract` |
+
+---
+
+## Vector Support
+
+DBSet supports storing and searching vector embeddings for AI/ML workloads like semantic search, RAG, and recommendation systems.
+
+### Inserting Vectors
+
+```python
+from dbset import connect
+
+db = connect('postgresql://localhost/mydb')
+items = db['items']
+
+# Auto-detection: Lists with ≥64 numeric elements are vectors
+embedding = [0.1, 0.2, ...] * 128  # 128-dim embedding
+items.insert({'name': 'doc1', 'embedding': embedding})
+
+# numpy arrays also auto-detected
+import numpy as np
+items.insert({'name': 'doc2', 'embedding': np.array([0.1, 0.2, 0.3] * 100)})
+```
+
+### Similarity Search
+
+```python
+from dbset import DistanceMetric
+
+# Cosine distance (default)
+for row in items.find_similar('embedding', query_vector, metric='cosine', limit=5):
+    print(row['name'], row['_distance'])
+
+# L2 (Euclidean) distance
+for row in items.find_similar('embedding', query_vector, metric='l2', limit=5):
+    print(row['name'], row['_distance'])
+
+# Inner product (dot product)
+for row in items.find_similar('embedding', query_vector, metric='inner_product'):
+    print(row['name'], row['_distance'])
+
+# With filters
+for row in items.find_similar('embedding', query_vector, category='science'):
+    print(row['name'], row['_distance'])
+```
+
+### Distance Metrics
+
+| Metric | Constant | PostgreSQL | Description |
+|--------|----------|------------|-------------|
+| Cosine | `DistanceMetric.COSINE` | `<=>` | 1 - cosine similarity |
+| L2 | `DistanceMetric.L2` | `<->` | Euclidean distance |
+| Inner Product | `DistanceMetric.INNER_PRODUCT` | `<#>` | Negative dot product |
+
+### Vector Indexes (PostgreSQL)
+
+```python
+# Create HNSW index (recommended)
+items.create_vector_index('embedding', method='hnsw', metric='cosine')
+
+# Create IVFFlat index
+items.create_vector_index('embedding', method='ivfflat', metric='l2', lists=100)
+```
+
+---
+
+## Hybrid Search (BM25 + Vector)
+
+Hybrid search combines **full-text search (BM25)** with **vector similarity** for superior retrieval quality. Ideal for RAG applications.
+
+### Basic Usage
+
+```python
+from dbset import connect
+
+db = connect('postgresql://localhost/mydb')
+docs = db['documents']
+
+# Hybrid search with auto-index creation
+for row in docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=[0.1, 0.2, ...],
+    query_text='machine learning tutorial',
+    limit=10,
+    ensure=True,  # Auto-create FTS index
+):
+    print(row['title'], row['_score'])
+```
+
+### Fusion Methods
+
+**RRF (Reciprocal Rank Fusion)** - Default, recommended:
+```python
+# Formula: score = 1/(k + rank_vector) + 1/(k + rank_bm25)
+results = docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=query_vec,
+    query_text='python tutorial',
+    fusion='rrf',
+    rrf_k=60,
+)
+```
+
+**Linear Fusion** - Weighted combination:
+```python
+# Formula: score = α * norm(vector) + (1-α) * norm(bm25)
+results = docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=query_vec,
+    query_text='python tutorial',
+    fusion='linear',
+    vector_weight=0.7,  # 70% vector, 30% BM25
+)
+```
+
+### Multi-Column Text Search
+
+```python
+results = docs.hybrid_search(
+    vector_column='embedding',
+    text_column=['title', 'content'],  # Multiple columns
+    query_vector=query_vec,
+    query_text='neural networks',
+    ensure=True,
+)
+```
+
+### With JSONB Filters
+
+```python
+# Filter by tags array containing 'ai'
+results = posts.hybrid_search(
+    vector_column='embedding',
+    text_column='text',
+    query_vector=query_vec,
+    query_text='artificial intelligence',
+    tags={'@>': 'ai'},  # Contains 'ai'
+)
+
+# Filter by ANY of multiple tags
+results = posts.hybrid_search(
+    vector_column='embedding',
+    text_column='text',
+    query_vector=query_vec,
+    query_text='technology',
+    tags={'?|': ['ai', 'ml', 'data']},  # Any of these
+)
+```
+
+### FTS Index Management
+
+```python
+# Manual FTS index creation
+docs.create_fts_index(['title', 'content'], language='english')
+
+# Check if FTS index exists
+if docs.has_fts_index(['title', 'content']):
+    print("FTS index ready")
+
+# Auto-create with ensure=True
+docs.hybrid_search(..., ensure=True)
+```
+
+### Database-Specific FTS
+
+| Database | FTS Technology | Ranking | Index Type |
+|----------|----------------|---------|------------|
+| PostgreSQL | tsvector + GIN | `ts_rank_cd()` | GIN |
+| SQLite | FTS5 virtual table | `bm25()` | FTS5 triggers |
+| MySQL | FULLTEXT index | `MATCH() AGAINST()` | FULLTEXT |
+
+### Complete Example
+
+```python
+from dbset import connect, DistanceMetric
+
+db = connect('postgresql://localhost/mydb')
+posts = db['tg_posts']
+
+# Get query embedding from your model
+query_embedding = model.encode("artificial intelligence")
+
+# Hybrid search with all features
+results = list(posts.hybrid_search(
+    vector_column='embedding',
+    text_column='text',
+    query_vector=query_embedding,
+    query_text='neural network machine learning',
+    limit=10,
+    fusion='rrf',
+    rrf_k=60,
+    vector_metric=DistanceMetric.COSINE,
+    ensure=True,
+    language='english',
+    tags={'?|': ['ai', 'ml']},  # Any of these tags
+))
+
+for r in results:
+    print(f"[{r['channel']}] score={r['_score']:.4f}")
+    print(f"  {r['text'][:100]}...")
+
+db.close()
+```
+
 ---
 
 ## Testing

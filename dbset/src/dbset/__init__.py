@@ -60,8 +60,9 @@ from .exceptions import (
 from .sync_core import Database, Table
 from .types import PrimaryKeyConfig, PrimaryKeyType
 from .vector import DistanceMetric, Vector
+from .hybrid import FusionMethod
 
-__version__ = "1.0.13"
+__version__ = "1.0.14"
 __author__ = "Vecaslav Kunitki"
 
 
@@ -218,6 +219,8 @@ __all__ = [
     # Vector Support
     "Vector",
     "DistanceMetric",
+    # Hybrid Search
+    "FusionMethod",
     # Exceptions
     "DatasetError",
     "ConnectionError",

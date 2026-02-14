@@ -1303,6 +1303,284 @@ async for row in db.query(stmt):
     print(row)
 ```
 
+### Операторы фильтрации JSONB
+
+DBSet поддерживает продвинутые JSONB операторы для фильтрации массивов и объектов.
+
+#### Фильтрация массивов (`@>`, `?|`, `?&`)
+
+```python
+# Данные: tags = ['ai', 'ml', 'python']
+
+# Содержит одно значение
+posts.find(tags={'@>': 'ai'})
+# SQL: tags @> '["ai"]'::jsonb
+
+# Содержит ВСЕ значения (логика AND)
+posts.find(tags={'@>': ['ai', 'ml']})
+# SQL: tags @> '["ai", "ml"]'::jsonb
+
+# Содержит ЛЮБОЕ значение (логика OR)
+posts.find(tags={'?|': ['ai', 'ml', 'data']})
+# SQL: tags ?| array['ai', 'ml', 'data']
+
+# Читаемые алиасы
+posts.find(tags={'jsonb_any': ['ai', 'ml']})  # аналог ?|
+posts.find(tags={'jsonb_all': ['ai', 'ml']})  # аналог ?&
+```
+
+#### Dot-нотация для объектов
+
+```python
+# Данные: metadata = {'category': 'tech', 'author': {'name': 'John'}}
+
+# Простой доступ к полю
+posts.find(**{'metadata.category': 'tech'})
+# SQL: metadata->>'category' = 'tech'
+
+# Доступ к вложенному полю
+posts.find(**{'metadata.author.name': 'John'})
+# SQL: metadata #>> '{author,name}' = 'John'
+
+# С операторами сравнения
+posts.find(**{'metadata.views': {'>=': 1000}})
+```
+
+#### Проверка содержимого объекта
+
+```python
+# Проверка что JSONB объект содержит ключ-значение
+posts.find(metadata={'@>': {'category': 'tech'}})
+# SQL: metadata @> '{"category": "tech"}'::jsonb
+```
+
+#### Поддерживаемые JSONB операторы
+
+| Оператор | Синтаксис | Описание |
+|----------|-----------|----------|
+| `@>` | `tags={'@>': 'ai'}` | Содержит ВСЕ (AND) |
+| `<@` | `tags={'<@': ['a','b']}` | Содержится в значении |
+| `?|` | `tags={'?|': ['ai','ml']}` | Содержит ЛЮБОЕ (OR) |
+| `?&` | `tags={'?&': ['ai','ml']}` | Содержит все ключи |
+| `jsonb_contains` | Алиас для `@>` | |
+| `jsonb_any` | Алиас для `?|` | |
+| `jsonb_all` | Алиас для `?&` | |
+| dot notation | `{'meta.field': 'val'}` | Доступ к вложенным полям |
+
+#### Поддержка баз данных
+
+| База данных | Массив ANY | Массив ALL | Доступ к объекту |
+|-------------|------------|------------|------------------|
+| PostgreSQL | `?|` нативный | `@>` / `?&` | `->>`/`#>>` |
+| MySQL | `JSON_CONTAINS` OR | `JSON_CONTAINS` AND | `JSON_EXTRACT` |
+| SQLite | `json_each` EXISTS | `json_each` EXISTS | `json_extract` |
+
+---
+
+## Поддержка векторов
+
+DBSet поддерживает хранение и поиск векторных эмбеддингов для AI/ML задач: семантический поиск, RAG, рекомендательные системы.
+
+### Вставка векторов
+
+```python
+from dbset import connect
+
+db = connect('postgresql://localhost/mydb')
+items = db['items']
+
+# Авто-определение: списки с ≥64 числовыми элементами — векторы
+embedding = [0.1, 0.2, ...] * 128  # 128-мерный эмбеддинг
+items.insert({'name': 'doc1', 'embedding': embedding})
+
+# numpy массивы тоже авто-определяются
+import numpy as np
+items.insert({'name': 'doc2', 'embedding': np.array([0.1, 0.2, 0.3] * 100)})
+```
+
+### Поиск по сходству
+
+```python
+from dbset import DistanceMetric
+
+# Косинусное расстояние (по умолчанию)
+for row in items.find_similar('embedding', query_vector, metric='cosine', limit=5):
+    print(row['name'], row['_distance'])
+
+# L2 (Евклидово) расстояние
+for row in items.find_similar('embedding', query_vector, metric='l2', limit=5):
+    print(row['name'], row['_distance'])
+
+# Скалярное произведение (dot product)
+for row in items.find_similar('embedding', query_vector, metric='inner_product'):
+    print(row['name'], row['_distance'])
+
+# С фильтрами
+for row in items.find_similar('embedding', query_vector, category='science'):
+    print(row['name'], row['_distance'])
+```
+
+### Метрики расстояния
+
+| Метрика | Константа | PostgreSQL | Описание |
+|---------|-----------|------------|----------|
+| Косинус | `DistanceMetric.COSINE` | `<=>` | 1 - cosine similarity |
+| L2 | `DistanceMetric.L2` | `<->` | Евклидово расстояние |
+| Inner Product | `DistanceMetric.INNER_PRODUCT` | `<#>` | Отрицательное скалярное произведение |
+
+### Векторные индексы (PostgreSQL)
+
+```python
+# Создание HNSW индекса (рекомендуется)
+items.create_vector_index('embedding', method='hnsw', metric='cosine')
+
+# Создание IVFFlat индекса
+items.create_vector_index('embedding', method='ivfflat', metric='l2', lists=100)
+```
+
+---
+
+## Гибридный поиск (BM25 + Vector)
+
+Гибридный поиск комбинирует **полнотекстовый поиск (BM25)** с **векторным сходством** для лучшего качества поиска. Идеально для RAG-приложений.
+
+### Базовое использование
+
+```python
+from dbset import connect
+
+db = connect('postgresql://localhost/mydb')
+docs = db['documents']
+
+# Гибридный поиск с автосозданием индекса
+for row in docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=[0.1, 0.2, ...],
+    query_text='машинное обучение туториал',
+    limit=10,
+    ensure=True,  # Автосоздание FTS индекса
+):
+    print(row['title'], row['_score'])
+```
+
+### Методы объединения результатов
+
+**RRF (Reciprocal Rank Fusion)** — по умолчанию, рекомендуется:
+```python
+# Формула: score = 1/(k + rank_vector) + 1/(k + rank_bm25)
+results = docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=query_vec,
+    query_text='python tutorial',
+    fusion='rrf',
+    rrf_k=60,
+)
+```
+
+**Linear Fusion** — взвешенная комбинация:
+```python
+# Формула: score = α * norm(vector) + (1-α) * norm(bm25)
+results = docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=query_vec,
+    query_text='python tutorial',
+    fusion='linear',
+    vector_weight=0.7,  # 70% вектор, 30% BM25
+)
+```
+
+### Поиск по нескольким текстовым колонкам
+
+```python
+results = docs.hybrid_search(
+    vector_column='embedding',
+    text_column=['title', 'content'],  # Несколько колонок
+    query_vector=query_vec,
+    query_text='нейросети',
+    ensure=True,
+)
+```
+
+### С JSONB фильтрами
+
+```python
+# Фильтр по массиву tags, содержащему 'ai'
+results = posts.hybrid_search(
+    vector_column='embedding',
+    text_column='text',
+    query_vector=query_vec,
+    query_text='искусственный интеллект',
+    tags={'@>': 'ai'},  # Содержит 'ai'
+)
+
+# Фильтр по ЛЮБОМУ из тегов
+results = posts.hybrid_search(
+    vector_column='embedding',
+    text_column='text',
+    query_vector=query_vec,
+    query_text='технологии',
+    tags={'?|': ['ai', 'ml', 'data']},  # Любой из этих
+)
+```
+
+### Управление FTS индексами
+
+```python
+# Ручное создание FTS индекса
+docs.create_fts_index(['title', 'content'], language='russian')
+
+# Проверка существования FTS индекса
+if docs.has_fts_index(['title', 'content']):
+    print("FTS индекс готов")
+
+# Автосоздание с ensure=True
+docs.hybrid_search(..., ensure=True)
+```
+
+### Реализация FTS по базам данных
+
+| База данных | Технология FTS | Ранжирование | Тип индекса |
+|-------------|----------------|--------------|-------------|
+| PostgreSQL | tsvector + GIN | `ts_rank_cd()` | GIN |
+| SQLite | FTS5 виртуальная таблица | `bm25()` | FTS5 триггеры |
+| MySQL | FULLTEXT индекс | `MATCH() AGAINST()` | FULLTEXT |
+
+### Полный пример
+
+```python
+from dbset import connect, DistanceMetric
+
+db = connect('postgresql://localhost/mydb')
+posts = db['tg_posts']
+
+# Получаем эмбеддинг запроса от модели
+query_embedding = model.encode("искусственный интеллект")
+
+# Гибридный поиск со всеми возможностями
+results = list(posts.hybrid_search(
+    vector_column='embedding',
+    text_column='text',
+    query_vector=query_embedding,
+    query_text='нейросеть машинное обучение',
+    limit=10,
+    fusion='rrf',
+    rrf_k=60,
+    vector_metric=DistanceMetric.COSINE,
+    ensure=True,
+    language='russian',
+    tags={'?|': ['ai', 'ml']},  # Любой из этих тегов
+))
+
+for r in results:
+    print(f"[{r['channel']}] score={r['_score']:.4f}")
+    print(f"  {r['text'][:100]}...")
+
+db.close()
+```
+
 ---
 
 ## Тестирование
