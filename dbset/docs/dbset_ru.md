@@ -1464,6 +1464,29 @@ for row in docs.hybrid_search(
     print(row['title'], row['_score'])
 ```
 
+### Пагинация
+
+Используйте `limit` и `offset` для постраничных результатов:
+
+```python
+# Страница 1 (первые 10 результатов)
+page1 = list(docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=query_vec,
+    query_text='машинное обучение',
+    limit=10,
+    offset=0,
+    ensure=True,
+))
+
+# Страница 2 (результаты 11-20)
+page2 = list(docs.hybrid_search(..., limit=10, offset=10))
+
+# Страница 3 (результаты 21-30)
+page3 = list(docs.hybrid_search(..., limit=10, offset=20))
+```
+
 ### Методы объединения результатов
 
 **RRF (Reciprocal Rank Fusion)** — по умолчанию, рекомендуется:

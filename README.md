@@ -502,6 +502,37 @@ for row in docs.hybrid_search(
     print(row['title'], row['_score'])
 ```
 
+#### Pagination
+
+Use `limit` and `offset` for paginated results:
+
+```python
+# Page 1 (first 10 results)
+page1 = list(docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=query_vec,
+    query_text='machine learning',
+    limit=10,
+    offset=0,
+    ensure=True,
+))
+
+# Page 2 (results 11-20)
+page2 = list(docs.hybrid_search(
+    ...
+    limit=10,
+    offset=10,
+))
+
+# Page 3 (results 21-30)
+page3 = list(docs.hybrid_search(
+    ...
+    limit=10,
+    offset=20,
+))
+```
+
 #### Fusion Methods
 
 Two fusion algorithms are available:

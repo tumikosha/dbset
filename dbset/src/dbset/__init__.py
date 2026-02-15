@@ -63,7 +63,6 @@ from .vector import DistanceMetric, Vector
 from .hybrid import FusionMethod
 
 __version__ = "1.1.1"
-__author__ = "Veaceslav Kunitki"
 
 
 # Convenience functions for creating database connections

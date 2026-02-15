@@ -1344,6 +1344,7 @@ class AsyncTable:
         query_text: str,
         *,
         limit: int = 10,
+        offset: int = 0,
         vector_weight: float = 0.5,
         fusion: str = 'rrf',
         rrf_k: int = 60,
@@ -1365,6 +1366,7 @@ class AsyncTable:
             query_vector: Query embedding vector (list or numpy array)
             query_text: Text query for BM25 search
             limit: Maximum number of results (default: 10)
+            offset: Number of results to skip for pagination (default: 0)
             vector_weight: Weight for vector results in linear fusion (0.0-1.0)
             fusion: Fusion method - 'rrf' (default) or 'linear'
             rrf_k: K parameter for RRF (default: 60)
@@ -1417,7 +1419,7 @@ class AsyncTable:
                 await self.create_fts_index(text_columns, language=language)
 
         # Fetch more results than needed for fusion (we need overlap)
-        search_limit = limit * 3
+        search_limit = (offset + limit) * 3
 
         # Execute BM25 search
         async with self._pool.connect() as conn:
@@ -1455,9 +1457,9 @@ class AsyncTable:
             rrf_k=rrf_k,
         )
 
-        # Fetch full rows for top results
-        top_ids = [doc_id for doc_id, _ in fused[:limit]]
-        scores = {doc_id: score for doc_id, score in fused[:limit]}
+        # Fetch full rows for top results (with offset for pagination)
+        top_ids = [doc_id for doc_id, _ in fused[offset:offset + limit]]
+        scores = {doc_id: score for doc_id, score in fused[offset:offset + limit]}
 
         if not top_ids:
             return
