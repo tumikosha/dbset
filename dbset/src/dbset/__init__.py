@@ -62,7 +62,7 @@ from .types import PrimaryKeyConfig, PrimaryKeyType
 from .vector import DistanceMetric, Vector
 from .hybrid import FusionMethod
 
-__version__ = "1.0.14"
+__version__ = "1.1.0"
 __author__ = "Vecaslav Kunitki"
 
 
