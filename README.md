@@ -13,6 +13,7 @@ A Python library for simplified database operations, inspired by the original `d
 - **Type Inference**: Automatic Python → SQLAlchemy type mapping (TEXT for all strings)
 - **JSON/JSONB Support**: Native handling of nested dicts and lists (JSONB for PostgreSQL)
 - **Vector Support**: Store and search embeddings with auto-detection from Python lists (no numpy required)
+- **Hybrid Search**: Combine full-text (BM25) and vector similarity with RRF or linear fusion
 
 ## Installation
 
@@ -1003,19 +1004,20 @@ def import_customers(csv_path: str):
 
 ## Status
 
-**Phase 1-3 Complete:**
+**Implemented:**
 - ✅ Infrastructure (exceptions, types, validators, connection, query)
 - ✅ Schema management (DDL operations)
 - ✅ Async API (AsyncDatabase, AsyncTable)
 - ✅ Sync API (Database, Table)
 - ✅ JSON/JSONB support (auto-detection by dialect)
 - ✅ Vector support (embeddings, similarity search, pgvector integration)
-- ✅ Unit tests (230+ tests passing)
+- ✅ Hybrid search (BM25 + vector, RRF/linear fusion)
+- ✅ `skip_null_columns` to control auto-creation of columns for `None` values (default on)
+- ✅ Unit tests (250+ tests passing)
 
 **Remaining Phases:**
 - [ ] Integration tests with PostgreSQL
 - [ ] Performance benchmarks
-- [ ] Documentation and examples
 
 ## Design Philosophy
 
