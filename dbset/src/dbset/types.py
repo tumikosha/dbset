@@ -489,3 +489,15 @@ class PrimaryKeyConfig:
         if self.generator:
             return self.generator()
         return None  # Integer uses DB autoincrement
+
+
+def strip_uncreatable_nulls(row: dict, table) -> dict:
+    """Drop None-valued keys that have no existing column.
+
+    When skip_null_columns is enabled, a key whose value is None and whose
+    column does not yet exist cannot have its type inferred, so we skip it
+    entirely (no column is created, the key never reaches the statement).
+    Keys whose column already exists are kept so the value is written as NULL.
+    """
+    existing = {c.name for c in table.columns}
+    return {k: v for k, v in row.items() if v is not None or k in existing}

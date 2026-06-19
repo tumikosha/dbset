@@ -10,7 +10,7 @@ from .connection import SyncConnectionPool, create_pool_config
 from .exceptions import QueryError, ReadOnlyError, TableNotFoundError, VectorError
 from .query import FilterBuilder
 from .schema import SyncSchemaManager
-from .types import PrimaryKeyConfig, PrimaryKeyType, TypeInference
+from .types import PrimaryKeyConfig, PrimaryKeyType, TypeInference, strip_uncreatable_nulls
 from .validators import ReadOnlyValidator
 from .vector import (
     DistanceMetric,
@@ -57,6 +57,7 @@ class Database:
         ensure_schema: bool = True,
         pk_config: PrimaryKeyConfig | None = None,
         text_index_prefix: int = 255,
+        skip_null_columns: bool = True,
     ):
         """
         Initialize database connection.
@@ -79,6 +80,7 @@ class Database:
         self._ensure_schema = ensure_schema
         self._pk_config = pk_config or PrimaryKeyConfig()
         self._text_index_prefix = text_index_prefix
+        self._skip_null_columns = skip_null_columns
         self._tables: dict[str, 'Table'] = {}
 
     @classmethod
@@ -94,6 +96,7 @@ class Database:
         primary_key_column: str = 'id',
         pk_config: PrimaryKeyConfig | None = None,
         text_index_prefix: int = 255,
+        skip_null_columns: bool = True,
         **engine_kwargs,
     ) -> 'Database':
         """
@@ -179,6 +182,7 @@ class Database:
             ensure_schema=ensure_schema,
             pk_config=pk_config,
             text_index_prefix=text_index_prefix,
+            skip_null_columns=skip_null_columns,
         )
 
     def __getitem__(self, table_name: str) -> 'Table':
@@ -208,6 +212,7 @@ class Database:
             read_only=self._read_only,
             ensure_schema=self._ensure_schema,
             text_index_prefix=self._text_index_prefix,
+            skip_null_columns=self._skip_null_columns,
         )
 
         # Cache it
@@ -334,6 +339,7 @@ class Table:
         read_only: bool = False,
         ensure_schema: bool = True,
         text_index_prefix: int = 255,
+        skip_null_columns: bool = True,
     ):
         """Initialize table wrapper."""
         self._db = db
@@ -343,6 +349,7 @@ class Table:
         self._read_only = read_only
         self._ensure_schema = ensure_schema
         self._text_index_prefix = text_index_prefix
+        self._skip_null_columns = skip_null_columns
         self._table = None  # SQLAlchemy Table (lazy loaded)
 
     def _get_table(self):
@@ -420,6 +427,10 @@ class Table:
             pk_config=self._db._pk_config if ensure else None
         )
 
+        # Strip None-valued columns that don't exist (skip_null_columns enabled)
+        if self._skip_null_columns:
+            row = strip_uncreatable_nulls(row, table)
+
         # Generate primary key value if needed (for UUID/CUSTOM types)
         pk_col = self._db._pk_config.column_name
         if pk_col not in row and self._db._pk_config.generator:
@@ -485,6 +496,10 @@ class Table:
 
         # Get or create table
         table = self._schema.get_table(self._name, ensure_exists=ensure)
+
+        # Strip None-valued columns that don't exist (skip_null_columns enabled)
+        if self._skip_null_columns:
+            rows = [strip_uncreatable_nulls(r, table) for r in rows]
 
         # Infer types and ensure columns
         if ensure:
@@ -645,6 +660,10 @@ class Table:
 
         table = self._get_table()
 
+        # Strip None-valued columns that don't exist (skip_null_columns enabled)
+        if self._skip_null_columns:
+            row = strip_uncreatable_nulls(row, table)
+
         # Build WHERE clause
         if keys:
             # Filter keys to only include columns that exist in the table
@@ -718,6 +737,10 @@ class Table:
                 ensure_exists=True,
                 pk_config=self._db._pk_config
             )
+
+            # Strip None-valued columns that don't exist (skip_null_columns enabled)
+            if self._skip_null_columns:
+                row = strip_uncreatable_nulls(row, table)
 
             # Infer types and ensure columns exist
             inferred_types = TypeInference.infer_types_from_row(row, dialect=self._dialect)
@@ -802,6 +825,10 @@ class Table:
                 ensure_exists=True,
                 pk_config=self._db._pk_config
             )
+
+            # Strip None-valued columns that don't exist (skip_null_columns enabled)
+            if self._skip_null_columns:
+                rows = [strip_uncreatable_nulls(r, table) for r in rows]
 
             # Infer types from first row and ensure columns exist
             inferred_types = TypeInference.infer_types_from_row(rows[0], dialect=self._dialect)
