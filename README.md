@@ -6,7 +6,7 @@ A Python library for simplified database operations, inspired by the original `d
 
 - **Built on SQLAlchemy 2.x**: Thin wrapper providing Pythonic API over SQLAlchemy
 - **Dual API**: Both sync and async interfaces with identical APIs
-- **Automatic Schema Management**: Auto-create tables and columns on insert
+- **Automatic Schema Management**: Auto-create tables and columns on insert (skips ambiguous `None`-only columns by default — see `skip_null_columns`)
 - **Read-Only Mode**: Built-in safety for marketing queries
 - **Connection Pooling**: Efficient connection reuse via SQLAlchemy
 - **Dict-Based Filtering**: Pythonic query API with advanced filters
@@ -247,6 +247,41 @@ except QueryError as e:
 **Why the difference?**
 - `upsert()` has a fallback (INSERT), so it can safely proceed
 - `update()` without a WHERE clause would update ALL rows, which is dangerous
+
+### Skipping Null Columns
+
+When auto-creating schema, a dict key whose value is `None` has no inferable
+type. By default DBset now **skips** such keys: if the column does not yet
+exist, it is not created and the key is dropped from the statement. Columns
+that already exist still receive `NULL` as usual.
+
+This is controlled by `skip_null_columns` on `connect()` / `async_connect()`
+(default `True`):
+
+```python
+db = connect('sqlite:///:memory:')           # skip_null_columns=True (default)
+users = db['users']
+
+# 'note' has no column and value is None → column NOT created, key skipped
+users.insert({'name': 'John', 'note': None})
+# table 'users' has columns: id, name  (no 'note')
+
+# If the column already exists, None is written as NULL
+users.insert({'name': 'Ann', 'note': 'hi'})  # creates 'note'
+users.insert({'name': 'Bob', 'note': None})  # writes NULL into existing 'note'
+```
+
+To restore the previous behavior (auto-create a `TEXT` column for `None`
+values), pass `skip_null_columns=False`:
+
+```python
+db = connect('sqlite:///:memory:', skip_null_columns=False)
+db['users'].insert({'name': 'John', 'note': None})  # creates 'note' as TEXT
+```
+
+> **Behavior change (v1.1.0):** the default is `True`. Previously `None`
+> values always auto-created a `TEXT` column. Pass `skip_null_columns=False`
+> to keep the old behavior.
 
 ### Transactions
 
