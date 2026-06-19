@@ -76,6 +76,7 @@ async def async_connect(
     primary_key_type: str | PrimaryKeyType = PrimaryKeyType.INTEGER,
     primary_key_column: str = 'id',
     pk_config: PrimaryKeyConfig | None = None,
+    skip_null_columns: bool = True,
     **kwargs,
 ) -> AsyncDatabase:
     """
@@ -138,6 +139,7 @@ async def async_connect(
         primary_key_type=primary_key_type,
         primary_key_column=primary_key_column,
         pk_config=pk_config,
+        skip_null_columns=skip_null_columns,
         **kwargs,
     )
 

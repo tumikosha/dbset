@@ -11,7 +11,12 @@ from .connection import AsyncConnectionPool, create_pool_config
 from .exceptions import ReadOnlyError, QueryError, TableNotFoundError, VectorError
 from .query import FilterBuilder
 from .schema import AsyncSchemaManager
-from .types import PrimaryKeyConfig, PrimaryKeyType, TypeInference
+from .types import (
+    PrimaryKeyConfig,
+    PrimaryKeyType,
+    TypeInference,
+    strip_uncreatable_nulls,
+)
 from .validators import ReadOnlyValidator
 from .vector import (
     DistanceMetric,
@@ -58,6 +63,7 @@ class AsyncDatabase:
         ensure_schema: bool = True,
         pk_config: PrimaryKeyConfig | None = None,
         text_index_prefix: int = 255,
+        skip_null_columns: bool = True,
     ):
         """
         Initialize database connection.
@@ -80,6 +86,7 @@ class AsyncDatabase:
         self._ensure_schema = ensure_schema
         self._pk_config = pk_config or PrimaryKeyConfig()
         self._text_index_prefix = text_index_prefix
+        self._skip_null_columns = skip_null_columns
         self._tables: dict[str, 'AsyncTable'] = {}
 
     @classmethod
@@ -95,6 +102,7 @@ class AsyncDatabase:
         primary_key_column: str = 'id',
         pk_config: PrimaryKeyConfig | None = None,
         text_index_prefix: int = 255,
+        skip_null_columns: bool = True,
         **engine_kwargs,
     ) -> 'AsyncDatabase':
         """
@@ -187,6 +195,7 @@ class AsyncDatabase:
             ensure_schema=ensure_schema,
             pk_config=pk_config,
             text_index_prefix=text_index_prefix,
+            skip_null_columns=skip_null_columns,
         )
 
     def __getitem__(self, table_name: str) -> 'AsyncTable':
@@ -216,6 +225,7 @@ class AsyncDatabase:
             read_only=self._read_only,
             ensure_schema=self._ensure_schema,
             text_index_prefix=self._text_index_prefix,
+            skip_null_columns=self._skip_null_columns,
         )
 
         # Cache it
@@ -355,6 +365,7 @@ class AsyncTable:
         read_only: bool = False,
         ensure_schema: bool = True,
         text_index_prefix: int = 255,
+        skip_null_columns: bool = True,
     ):
         """
         Initialize table wrapper.
@@ -375,6 +386,7 @@ class AsyncTable:
         self._read_only = read_only
         self._ensure_schema = ensure_schema
         self._text_index_prefix = text_index_prefix
+        self._skip_null_columns = skip_null_columns
         self._table = None  # SQLAlchemy Table (lazy loaded)
 
     async def _get_table(self):
@@ -460,6 +472,10 @@ class AsyncTable:
             pk_config=self._db._pk_config if ensure else None
         )
 
+        # Strip None-valued columns that don't exist (skip_null_columns enabled)
+        if self._skip_null_columns:
+            row = strip_uncreatable_nulls(row, table)
+
         # Generate primary key value if needed (for UUID/CUSTOM types)
         pk_col = self._db._pk_config.column_name
         if pk_col not in row and self._db._pk_config.generator:
@@ -527,6 +543,10 @@ class AsyncTable:
 
         # Get or create table
         table = await self._schema.get_table(self._name, ensure_exists=ensure)
+
+        # Strip None-valued columns that don't exist (skip_null_columns enabled)
+        if self._skip_null_columns:
+            rows = [strip_uncreatable_nulls(r, table) for r in rows]
 
         # Infer types from first row and ensure columns
         if ensure:
@@ -709,6 +729,10 @@ class AsyncTable:
 
         table = await self._get_table()
 
+        # Strip None-valued columns that don't exist (skip_null_columns enabled)
+        if self._skip_null_columns:
+            row = strip_uncreatable_nulls(row, table)
+
         # Build WHERE clause
         if keys:
             # Filter keys to only include columns that exist in the table
@@ -787,6 +811,10 @@ class AsyncTable:
                 ensure_exists=True,
                 pk_config=self._db._pk_config
             )
+
+            # Strip None-valued columns that don't exist (skip_null_columns enabled)
+            if self._skip_null_columns:
+                row = strip_uncreatable_nulls(row, table)
 
             # Infer types and ensure columns exist
             inferred_types = TypeInference.infer_types_from_row(row, dialect=self._dialect)
@@ -871,6 +899,10 @@ class AsyncTable:
                 ensure_exists=True,
                 pk_config=self._db._pk_config
             )
+
+            # Strip None-valued columns that don't exist (skip_null_columns enabled)
+            if self._skip_null_columns:
+                rows = [strip_uncreatable_nulls(r, table) for r in rows]
 
             # Infer types from first row and ensure columns exist
             inferred_types = TypeInference.infer_types_from_row(rows[0], dialect=self._dialect)
