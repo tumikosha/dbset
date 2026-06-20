@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1
+
+### Docs
+
+- README: surface Hybrid Search in the Features list and refresh the Status
+  section (hybrid search, `skip_null_columns`, current test count).
+
 ## 1.1.0
 
 ### Behavior change
