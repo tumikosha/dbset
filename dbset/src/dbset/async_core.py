@@ -1352,6 +1352,7 @@ class AsyncTable:
         language: str = 'english',
         vector_metric: str = DistanceMetric.COSINE,
         include_scores: bool = True,
+        text_query_mode: str = 'and',
         **filters,
     ) -> AsyncIterator[dict]:
         """
@@ -1374,6 +1375,11 @@ class AsyncTable:
             language: Language for text stemming (default: 'english')
             vector_metric: Distance metric for vector search
             include_scores: Include '_score' field in results (default: True)
+            text_query_mode: BM25 word semantics — 'and' (default): a document
+                must contain ALL query words; 'or': ANY word matches and
+                fuller matches simply rank higher. Use 'or' for multilingual
+                corpora where extra query words should broaden, not narrow,
+                the text branch. (postgresql/sqlite; no-op on mysql)
             **filters: Additional column filters (supports JSONB dot notation)
 
         Yields:
@@ -1432,6 +1438,7 @@ class AsyncTable:
                 limit=search_limit,
                 language=language,
                 pk_column=pk_col,
+                query_mode=text_query_mode,
             )
 
         # Execute vector search - collect results
