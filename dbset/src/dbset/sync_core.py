@@ -1342,6 +1342,9 @@ class Table:
 
         # Execute BM25 search
         with self._pool.connect() as conn:
+            # Filters go INSIDE the FTS query too — otherwise the BM25 branch
+            # floods the fusion with rows the row-fetch below will drop, and
+            # filtered searches come back near-empty / vector-only.
             bm25_results = FTSManager.fts_search_sync(
                 conn,
                 self._name,
@@ -1352,6 +1355,7 @@ class Table:
                 language=language,
                 pk_column=pk_col,
                 query_mode=text_query_mode,
+                filters=filters,
             )
 
         # Execute vector search - collect results

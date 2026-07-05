@@ -99,3 +99,52 @@ class TestFtsSearchQueryMode:
                 text_query_mode=mode, limit=10,
             ))
             assert results, mode
+
+
+@pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+class TestFtsFilters:
+    """Equality filters must be applied INSIDE the FTS branch — otherwise the
+    fused candidate pool is dominated by rows the final row-fetch drops and
+    filtered searches come back near-empty."""
+
+    @pytest.fixture
+    def cats(self, db):
+        table = db['posts']
+        rows = [
+            ('python developer wanted', 'jobs'),
+            ('python tutorial for beginners', 'blog'),
+            ('python data engineer role', 'jobs'),
+        ]
+        for i, (title, cat) in enumerate(rows):
+            table.insert({'title': title, 'category': cat,
+                          'embedding': np.eye(3)[min(i, 2)]})
+        table.create_fts_index('title')
+        return table
+
+    def test_fts_search_honours_filters(self, db, cats):
+        with db.engine.connect() as conn:
+            rows = FTSManager.fts_search_sync(
+                conn, 'posts', ['title'], 'python', 'sqlite',
+                pk_column='id', query_mode='or', filters={'category': 'jobs'},
+            )
+        assert {pk for pk, _ in rows} == {1, 3}
+
+    def test_hybrid_search_filtered_page_is_full(self, cats):
+        results = list(cats.hybrid_search(
+            vector_column='embedding', text_column='title',
+            query_vector=[1.0, 0.0, 0.0], query_text='python',
+            text_query_mode='or', limit=10, category='jobs',
+        ))
+        titles = {r['title'] for r in results}
+        assert titles == {'python developer wanted', 'python data engineer role'}
+
+    def test_non_identifier_filter_keys_are_skipped(self, db, cats):
+        # JSONB-path style keys must not break the SQL; they are enforced at
+        # the row-fetch stage instead.
+        with db.engine.connect() as conn:
+            rows = FTSManager.fts_search_sync(
+                conn, 'posts', ['title'], 'python', 'sqlite',
+                pk_column='id', query_mode='or',
+                filters={'meta.category': 'jobs'},
+            )
+        assert len(rows) == 3  # unfiltered — dotted key skipped safely

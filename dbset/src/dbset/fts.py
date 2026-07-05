@@ -10,10 +10,37 @@ from sqlalchemy.engine import Connection
 # Word tokens for building OR-mode boolean queries (unicode-aware).
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
+# Plain SQL identifier — filters on anything fancier (JSONB paths etc.) are
+# left to the caller's row-fetch stage rather than injected into FTS SQL.
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 
 def _query_tokens(query: str) -> list[str]:
     """Split free text into plain word tokens (drops punctuation/operators)."""
     return _WORD_RE.findall(query or "")
+
+
+def _filter_clause(filters: dict | None, prefix: str = "") -> tuple[str, dict]:
+    """Render simple equality filters as SQL `AND col = :param` conditions.
+
+    Only plain-identifier columns are rendered (values bound as parameters);
+    dotted/JSONB keys are skipped — the hybrid-search row-fetch still enforces
+    them, this clause only keeps the FTS candidate pool from being flooded by
+    rows the caller will drop anyway.
+    """
+    if not filters:
+        return "", {}
+    conds, params = [], {}
+    for i, (col, val) in enumerate(filters.items()):
+        if not _IDENT_RE.match(col):
+            continue
+        p = f"flt_{i}"
+        if val is None:
+            conds.append(f"AND {prefix}{col} IS NULL")
+        else:
+            conds.append(f"AND {prefix}{col} = :{p}")
+            params[p] = val
+    return " ".join(conds), params
 
 
 class FTSConfig:
@@ -577,6 +604,7 @@ class FTSManager:
         language: str = 'english',
         pk_column: str = 'id',
         query_mode: str = 'and',
+        filters: dict | None = None,
     ) -> list[tuple[Any, float]]:
         """
         Execute FTS search and return (pk, score) pairs.
@@ -594,17 +622,23 @@ class FTSManager:
                 'or' — ANY word matches, rank still favours fuller matches.
                 Supported on postgresql and sqlite; mysql NATURAL LANGUAGE
                 MODE is inherently OR-like, so the flag is a no-op there.
+            filters: simple equality filters (column -> value) applied INSIDE
+                the FTS query so the candidate pool matches the caller's
+                filters (otherwise fused results get dropped at fetch time and
+                pages come back near-empty). Non-identifier keys (JSONB paths)
+                are skipped. postgresql + sqlite; ignored on mysql.
 
         Returns:
             List of (primary_key, bm25_score) tuples, sorted by relevance
         """
         if dialect == 'sqlite':
             return await FTSManager._sqlite_search_async(
-                conn, table_name, query, limit, pk_column, query_mode
+                conn, table_name, query, limit, pk_column, query_mode, filters
             )
         elif dialect == 'postgresql':
             return await FTSManager._postgresql_search_async(
-                conn, table_name, query, limit, language, pk_column, query_mode
+                conn, table_name, query, limit, language, pk_column, query_mode,
+                filters,
             )
         elif dialect in ('mysql', 'mariadb'):
             return await FTSManager._mysql_search_async(
@@ -624,16 +658,19 @@ class FTSManager:
         language: str = 'english',
         pk_column: str = 'id',
         query_mode: str = 'and',
+        filters: dict | None = None,
     ) -> list[tuple[Any, float]]:
         """Execute FTS search synchronously. See fts_search_async for args
-        (query_mode: 'and' = all words required, 'or' = any word matches)."""
+        (query_mode: 'and'|'or' word semantics; filters: simple equality
+        filters applied inside the FTS query)."""
         if dialect == 'sqlite':
             return FTSManager._sqlite_search_sync(
-                conn, table_name, query, limit, pk_column, query_mode
+                conn, table_name, query, limit, pk_column, query_mode, filters
             )
         elif dialect == 'postgresql':
             return FTSManager._postgresql_search_sync(
-                conn, table_name, query, limit, language, pk_column, query_mode
+                conn, table_name, query, limit, language, pk_column, query_mode,
+                filters,
             )
         elif dialect in ('mysql', 'mariadb'):
             return FTSManager._mysql_search_sync(
@@ -650,6 +687,7 @@ class FTSManager:
         limit: int,
         pk_column: str,
         query_mode: str = 'and',
+        filters: dict | None = None,
     ) -> list[tuple[Any, float]]:
         """SQLite FTS5 BM25 search."""
         fts_table = FTSManager.get_fts_table_name(table_name)
@@ -657,16 +695,12 @@ class FTSManager:
         if not query:
             return []
 
-        # FTS5 bm25() returns negative scores (more negative = better match)
-        # We negate to get positive scores where higher = better
-        search_sql = f"""
-            SELECT rowid, -bm25({fts_table}) as score
-            FROM {fts_table}
-            WHERE {fts_table} MATCH :query
-            ORDER BY score DESC
-            LIMIT :limit
-        """
-        result = await conn.execute(text(search_sql), {'query': query, 'limit': limit})
+        search_sql, params = FTSManager._sqlite_search_sql(
+            table_name, fts_table, filters
+        )
+        result = await conn.execute(
+            text(search_sql), {'query': query, 'limit': limit, **params}
+        )
         return [(row[0], row[1]) for row in result.fetchall()]
 
     @staticmethod
@@ -677,6 +711,7 @@ class FTSManager:
         limit: int,
         pk_column: str,
         query_mode: str = 'and',
+        filters: dict | None = None,
     ) -> list[tuple[Any, float]]:
         """SQLite FTS5 BM25 search (sync)."""
         fts_table = FTSManager.get_fts_table_name(table_name)
@@ -684,15 +719,39 @@ class FTSManager:
         if not query:
             return []
 
-        search_sql = f"""
+        search_sql, params = FTSManager._sqlite_search_sql(
+            table_name, fts_table, filters
+        )
+        result = conn.execute(
+            text(search_sql), {'query': query, 'limit': limit, **params}
+        )
+        return [(row[0], row[1]) for row in result.fetchall()]
+
+    @staticmethod
+    def _sqlite_search_sql(
+        table_name: str, fts_table: str, filters: dict | None
+    ) -> tuple[str, dict]:
+        """FTS5 search SQL; equality filters restrict via the base table.
+
+        FTS5 bm25() returns negative scores (more negative = better match) —
+        negated so higher = better. The FTS table only holds text + rowid, so
+        filters are applied through `rowid IN (SELECT rowid FROM base WHERE …)`.
+        """
+        clause, params = _filter_clause(filters)
+        flt = ""
+        if clause:
+            flt = (
+                f"AND rowid IN (SELECT rowid FROM {table_name} "
+                f"WHERE 1=1 {clause})"
+            )
+        sql = f"""
             SELECT rowid, -bm25({fts_table}) as score
             FROM {fts_table}
-            WHERE {fts_table} MATCH :query
+            WHERE {fts_table} MATCH :query {flt}
             ORDER BY score DESC
             LIMIT :limit
         """
-        result = conn.execute(text(search_sql), {'query': query, 'limit': limit})
-        return [(row[0], row[1]) for row in result.fetchall()]
+        return sql, params
 
     @staticmethod
     def _sqlite_match_query(query: str, query_mode: str) -> str:
@@ -715,6 +774,7 @@ class FTSManager:
         language: str,
         pk_column: str,
         query_mode: str = 'and',
+        filters: dict | None = None,
     ) -> list[tuple[Any, float]]:
         """PostgreSQL ts_rank search."""
         tsv_col = FTSManager.FTS_TSVECTOR_COLUMN
@@ -722,16 +782,17 @@ class FTSManager:
         tsquery_fn, query = FTSManager._pg_tsquery(query, query_mode)
         if not query:
             return []
+        clause, params = _filter_clause(filters)
         search_sql = f"""
             SELECT {pk_column}, ts_rank_cd({tsv_col}, {tsquery_fn}(:lang, :query)) as score
             FROM {table_name}
-            WHERE {tsv_col} @@ {tsquery_fn}(:lang, :query)
+            WHERE {tsv_col} @@ {tsquery_fn}(:lang, :query) {clause}
             ORDER BY score DESC
             LIMIT :limit
         """
         result = await conn.execute(
             text(search_sql),
-            {'lang': language, 'query': query, 'limit': limit}
+            {'lang': language, 'query': query, 'limit': limit, **params}
         )
         return [(row[0], row[1]) for row in result.fetchall()]
 
@@ -744,6 +805,7 @@ class FTSManager:
         language: str,
         pk_column: str,
         query_mode: str = 'and',
+        filters: dict | None = None,
     ) -> list[tuple[Any, float]]:
         """PostgreSQL ts_rank search (sync)."""
         tsv_col = FTSManager.FTS_TSVECTOR_COLUMN
@@ -751,16 +813,17 @@ class FTSManager:
         tsquery_fn, query = FTSManager._pg_tsquery(query, query_mode)
         if not query:
             return []
+        clause, params = _filter_clause(filters)
         search_sql = f"""
             SELECT {pk_column}, ts_rank_cd({tsv_col}, {tsquery_fn}(:lang, :query)) as score
             FROM {table_name}
-            WHERE {tsv_col} @@ {tsquery_fn}(:lang, :query)
+            WHERE {tsv_col} @@ {tsquery_fn}(:lang, :query) {clause}
             ORDER BY score DESC
             LIMIT :limit
         """
         result = conn.execute(
             text(search_sql),
-            {'lang': language, 'query': query, 'limit': limit}
+            {'lang': language, 'query': query, 'limit': limit, **params}
         )
         return [(row[0], row[1]) for row in result.fetchall()]
 

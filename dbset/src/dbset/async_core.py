@@ -1429,6 +1429,9 @@ class AsyncTable:
 
         # Execute BM25 search
         async with self._pool.connect() as conn:
+            # Filters go INSIDE the FTS query too — otherwise the BM25 branch
+            # floods the fusion with rows the row-fetch below will drop, and
+            # filtered searches come back near-empty / vector-only.
             bm25_results = await FTSManager.fts_search_async(
                 conn,
                 self._name,
@@ -1439,6 +1442,7 @@ class AsyncTable:
                 language=language,
                 pk_column=pk_col,
                 query_mode=text_query_mode,
+                filters=filters,
             )
 
         # Execute vector search - collect results
