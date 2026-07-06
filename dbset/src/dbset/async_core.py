@@ -1353,6 +1353,7 @@ class AsyncTable:
         vector_metric: str = DistanceMetric.COSINE,
         include_scores: bool = True,
         text_query_mode: str = 'and',
+        vector_max_distance: float | None = None,
         **filters,
     ) -> AsyncIterator[dict]:
         """
@@ -1375,6 +1376,11 @@ class AsyncTable:
             language: Language for text stemming (default: 'english')
             vector_metric: Distance metric for vector search
             include_scores: Include '_score' field in results (default: True)
+            vector_max_distance: drop vector candidates farther than this
+                (same metric as vector_metric, e.g. cosine distance 0..2).
+                Without it the vector branch ALWAYS returns its K nearest
+                rows — pure noise when nothing in the (filtered) corpus is
+                actually similar. None (default) keeps the old behaviour.
             text_query_mode: BM25 word semantics — 'and' (default): a document
                 must contain ALL query words; 'or': ANY word matches and
                 fuller matches simply rank higher. Use 'or' for multilingual
@@ -1457,6 +1463,8 @@ class AsyncTable:
         ):
             doc_id = row.get(pk_col)
             distance = row.get('_distance', 0.0)
+            if vector_max_distance is not None and distance > vector_max_distance:
+                continue  # too dissimilar — noise, not a match
             vector_results.append((doc_id, distance))
 
         # Fuse results

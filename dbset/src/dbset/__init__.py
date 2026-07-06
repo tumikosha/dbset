@@ -62,7 +62,7 @@ from .types import PrimaryKeyConfig, PrimaryKeyType
 from .vector import DistanceMetric, Vector
 from .hybrid import FusionMethod
 
-__version__ = "1.1.3"
+__version__ = "1.1.4"
 
 
 # Convenience functions for creating database connections

@@ -148,3 +148,31 @@ class TestFtsFilters:
                 filters={'meta.category': 'jobs'},
             )
         assert len(rows) == 3  # unfiltered — dotted key skipped safely
+
+
+@pytest.mark.skipif(not HAS_NUMPY, reason="numpy not installed")
+class TestVectorMaxDistance:
+    """vector_max_distance drops far (dissimilar) vector candidates so the
+    vector branch can't flood filtered searches with its K-nearest noise."""
+
+    @pytest.fixture
+    def spatial(self, db):
+        table = db['points']
+        table.insert({'title': 'near match', 'embedding': np.array([1.0, 0.0, 0.0])})
+        table.insert({'title': 'far noise', 'embedding': np.array([0.0, 1.0, 0.0])})
+        table.create_fts_index('title')
+        return table
+
+    def _search(self, table, **kw):
+        return [r['title'] for r in table.hybrid_search(
+            vector_column='embedding', text_column='title',
+            query_vector=[1.0, 0.0, 0.0], query_text='zzznotextmatch',
+            limit=10, **kw,
+        )]
+
+    def test_default_returns_k_nearest_noise(self, spatial):
+        # cosine distance: near=0.0, far=1.0 — both returned without a cutoff
+        assert set(self._search(spatial)) == {'near match', 'far noise'}
+
+    def test_cutoff_drops_far_candidates(self, spatial):
+        assert self._search(spatial, vector_max_distance=0.5) == ['near match']
