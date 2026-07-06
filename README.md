@@ -13,7 +13,7 @@ A Python library for simplified database operations, inspired by the original `d
 - **Type Inference**: Automatic Python → SQLAlchemy type mapping (TEXT for all strings)
 - **JSON/JSONB Support**: Native handling of nested dicts and lists (JSONB for PostgreSQL)
 - **Vector Support**: Store and search embeddings with auto-detection from Python lists (no numpy required)
-- **Hybrid Search**: Combine full-text (BM25) and vector similarity with RRF or linear fusion
+- **Hybrid Search**: Combine full-text (BM25) and vector similarity with RRF or linear fusion — with pagination (`offset`), AND/OR word semantics (`text_query_mode`), filters pushed into both branches, and a relevance cutoff (`vector_max_distance`)
 
 ## Installation
 
@@ -599,6 +599,72 @@ results = docs.hybrid_search(
     ensure=True,
 )
 ```
+
+#### Word Semantics: AND vs OR (`text_query_mode`)
+
+By default the BM25 branch requires **all** query words in a document
+(`plainto_tsquery` semantics) — adding words *narrows* the text branch. For
+multilingual corpora or discovery-style search, switch to OR: any word
+matches, and ranking still favours documents that match more words.
+
+```python
+results = docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=query_vec,
+    query_text='angular react javascript',
+    text_query_mode='or',   # 'and' (default) | 'or'
+)
+```
+
+Supported on PostgreSQL (`to_tsquery` with `|`) and SQLite FTS5 (`OR`);
+MySQL NATURAL LANGUAGE MODE is inherently OR-like, so the flag is a no-op.
+Tokens are extracted with `\w+`, so tsquery operators cannot be injected.
+
+> **Tip (PostgreSQL):** the `language` argument must match the config the FTS
+> index was built with. An index built with `language='simple'` (no stemming)
+> will never match an `'english'`-stemmed query ('engineer' → 'engin').
+
+#### Filters Apply to Both Branches
+
+Extra keyword filters (`**filters`) are enforced in the vector branch, in the
+final row fetch, **and (since 1.1.3) inside the FTS query itself** — so the
+BM25 candidate pool isn't flooded with rows the fetch would drop, and
+filtered pages come back full:
+
+```python
+results = docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=query_vec,
+    query_text='data engineer',
+    category='jobs',        # plain equality filters reach the FTS SQL too
+)
+```
+
+Simple identifier columns are pushed into the FTS SQL (parameter-bound);
+JSONB/dotted filters are still enforced at the row-fetch stage.
+
+#### Relevance Cutoff (`vector_max_distance`)
+
+The vector branch always returns its K *nearest* rows — even when nothing in
+the (filtered) corpus is actually similar, so a query with zero real matches
+still fills the page with nearest-neighbour noise. Cap it with a distance
+threshold (same metric as `vector_metric`); BM25 hits are unaffected:
+
+```python
+results = docs.hybrid_search(
+    vector_column='embedding',
+    text_column='content',
+    query_vector=query_vec,
+    query_text='dental assistant',
+    vector_max_distance=0.21,   # drop cosine-distance > 0.21 candidates
+)
+```
+
+Pick the threshold empirically for your embedding model and corpus (for
+multilingual-e5-large on job postings: relevant ≈ 0.11–0.21, noise ≥ 0.21).
+Default `None` keeps the old return-K-nearest behaviour.
 
 #### JSONB Array Filtering (`@>` operator)
 
