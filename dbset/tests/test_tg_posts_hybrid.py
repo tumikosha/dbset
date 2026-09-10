@@ -22,6 +22,8 @@ def load_env():
 
 load_env()
 
+import pytest
+
 from dbset import connect
 
 DB_URL = os.environ.get('DB_URL') or os.environ.get('db_url') or os.environ.get('DATABASE_URL', '')
@@ -38,6 +40,9 @@ def parse_vector(v):
     return v
 
 
+@pytest.mark.skipif(
+    not DB_URL, reason="needs a PostgreSQL URL in DB_URL/DATABASE_URL (and a tg_posts table)"
+)
 def test_hybrid_search_tg_posts():
     """Hybrid search on tg_posts with tags='ai' filter using @> operator."""
     from sqlalchemy import text as sql_text

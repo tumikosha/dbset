@@ -19,6 +19,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.types import TypeEngine
 
+from .connection import scoped_connection, sync_scoped_connection
 from .exceptions import ColumnNotFoundError, SchemaError, TableNotFoundError
 from .types import PrimaryKeyConfig, TypeInference
 from .vector import Vector
@@ -176,7 +177,7 @@ class AsyncSchemaManager:
             )
 
             # Create table in database
-            async with self._engine.begin() as conn:
+            async with scoped_connection(self._engine, transactional=True) as conn:
                 await conn.run_sync(table.create, checkfirst=True)
 
             # Refresh metadata
@@ -245,7 +246,7 @@ class AsyncSchemaManager:
             # Generate ALTER TABLE statement
             alter_sql = f"ALTER TABLE {quoted_table} ADD COLUMN {quoted_column} {col_type_sql}"
 
-            async with self._engine.begin() as conn:
+            async with scoped_connection(self._engine, transactional=True) as conn:
                 await conn.execute(DDL(alter_sql))
 
             # Refresh metadata
@@ -273,7 +274,7 @@ class AsyncSchemaManager:
 
         try:
             table = await self.get_table(table_name)
-            async with self._engine.begin() as conn:
+            async with scoped_connection(self._engine, transactional=True) as conn:
                 await conn.run_sync(table.drop)
 
             # Refresh metadata
@@ -295,7 +296,7 @@ class AsyncSchemaManager:
             # Clear existing metadata to force fresh reflection
             self._metadata.clear()
 
-            async with self._engine.connect() as conn:
+            async with scoped_connection(self._engine) as conn:
                 await conn.run_sync(
                     self._metadata.reflect,
                     schema=self._schema,
@@ -402,7 +403,7 @@ class AsyncSchemaManager:
             index = Index(index_name, *index_columns, unique=unique, **kw)
 
             # Create index in database
-            async with self._engine.begin() as conn:
+            async with scoped_connection(self._engine, transactional=True) as conn:
                 await conn.run_sync(index.create, checkfirst=True)
 
             # Refresh metadata to include new index
@@ -562,7 +563,7 @@ class SyncSchemaManager:
             )
 
             # Create table in database
-            with self._engine.begin() as conn:
+            with sync_scoped_connection(self._engine, transactional=True) as conn:
                 table.create(conn, checkfirst=True)
 
             # Refresh metadata
@@ -612,7 +613,7 @@ class SyncSchemaManager:
             # Generate ALTER TABLE statement
             alter_sql = f"ALTER TABLE {quoted_table} ADD COLUMN {quoted_column} {col_type_sql}"
 
-            with self._engine.begin() as conn:
+            with sync_scoped_connection(self._engine, transactional=True) as conn:
                 conn.execute(DDL(alter_sql))
 
             # Refresh metadata
@@ -631,7 +632,7 @@ class SyncSchemaManager:
 
         try:
             table = self.get_table(table_name)
-            with self._engine.begin() as conn:
+            with sync_scoped_connection(self._engine, transactional=True) as conn:
                 table.drop(conn)
 
             # Refresh metadata
@@ -649,7 +650,7 @@ class SyncSchemaManager:
             # Clear existing metadata to force fresh reflection
             self._metadata.clear()
 
-            with self._engine.connect() as conn:
+            with sync_scoped_connection(self._engine) as conn:
                 self._metadata.reflect(
                     bind=conn,
                     schema=self._schema,
@@ -744,7 +745,7 @@ class SyncSchemaManager:
             index = Index(index_name, *index_columns, unique=unique, **kw)
 
             # Create index in database
-            with self._engine.begin() as conn:
+            with sync_scoped_connection(self._engine, transactional=True) as conn:
                 index.create(conn, checkfirst=True)
 
             # Refresh metadata to include new index

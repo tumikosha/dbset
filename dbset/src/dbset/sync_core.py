@@ -1,7 +1,7 @@
 """Sync core API - Database and Table classes built on SQLAlchemy sync."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from typing import Any, Iterator
 
 from sqlalchemy import Engine, MetaData, asc, create_engine, delete, desc, func, insert, literal_column, select, text, update
@@ -228,6 +228,9 @@ class Database:
         """
         Execute raw SQL query or SQLAlchemy statement.
 
+        The result set is fetched in full before the first row is yielded, so
+        the connection is released before the caller starts consuming.
+
         Args:
             sql: SQL string or SQLAlchemy statement
             **params: Query parameters for raw SQL
@@ -253,6 +256,7 @@ class Database:
         if self._read_only and isinstance(sql, str):
             ReadOnlyValidator.validate_sql(sql)
 
+        # Fetch with the connection held, yield after it is released (see find()).
         with self._pool.connect() as conn:
             if isinstance(sql, str):
                 # Raw SQL string
@@ -261,14 +265,28 @@ class Database:
                 # SQLAlchemy statement
                 result = conn.execute(sql)
 
-            # Yield rows as dicts
-            for row in result:
-                yield dict(row._mapping)
+            rows = [dict(row._mapping) for row in result]
+
+        for row in rows:
+            yield row
 
     @contextmanager
     def transaction(self):
         """
         Start explicit transaction context.
+
+        Everything inside the block runs on one connection and commits together,
+        or rolls back if the block raises - statements executed on the yielded
+        connection and table methods called inside it alike. Work started in a
+        task spawned inside the block joins the same connection, so keep those
+        statements sequential: a connection runs one statement at a time and
+        drivers differ in how they react to an overlapping one.
+
+        A statement that fails inside a nested operation undoes only that
+        operation where the backend has real savepoints (PostgreSQL, MySQL), so
+        the rest of the block can carry on. sqlite has no usable savepoints -
+        pysqlite releases one as a commit - so there the operation joins the
+        transaction, and the driver's own behaviour after the error decides.
 
         Examples:
             >>> with db.transaction():
@@ -278,9 +296,11 @@ class Database:
         if self._read_only:
             raise ReadOnlyError("Transactions not allowed in read-only mode")
 
-        with self._pool.acquire() as conn:
-            with conn.begin():
-                yield conn
+        # pool.acquire() already opens the transaction; ambient=True publishes
+        # the connection so table operations inside the block join it instead of
+        # opening their own checkout and committing separately.
+        with self._pool.acquire(ambient=True) as conn:
+            yield conn
 
     @property
     def tables(self) -> list[str]:
@@ -528,15 +548,26 @@ class Table:
         _limit: int | None = None,
         _offset: int = 0,
         _order_by: str | list[str] | None = None,
+        _stream: bool = False,
         **filters,
     ) -> Iterator[dict]:
         """
         Find rows matching filters.
 
+        The result set is fetched in full before the first row is yielded, so
+        the connection is released before the caller starts consuming.
+
+        Pass ``_stream=True`` to iterate the result set from the database
+        instead: rows arrive as they are read and the connection stays checked
+        out until the iteration finishes, which on a single-connection pool
+        (sqlite ":memory:") also blocks every other caller until then. Close the
+        generator (``contextlib.closing``) if you abandon it early.
+
         Args:
             _limit: Maximum number of rows
             _offset: Number of rows to skip
             _order_by: Column(s) to order by
+            _stream: Iterate from the database instead of fetching everything
             **filters: Column filters
 
         Yields:
@@ -568,11 +599,30 @@ class Table:
         if _limit:
             stmt = stmt.limit(_limit)
 
-        # Execute and yield rows
+        if _stream:
+            # Explicitly asked for: the connection is held for the whole
+            # iteration, which is what streaming costs.
+            # acquire(), not connect(): a server-side cursor needs a
+            # transaction, and a non-transactional scope runs in AUTOCOMMIT.
+            with self._pool.acquire() as conn:
+                # On the statement, not the connection: Connection.execution_options()
+                # mutates the connection and the option would outlive this generator.
+                result = conn.execute(stmt.execution_options(stream_results=True))
+                for row in result:
+                    yield dict(row._mapping)
+            return
+
+        # Rows are materialized while the connection is held, then yielded after
+        # it is released: SQLAlchemy buffers the result set anyway, so keeping the
+        # connection checked out across yields buys nothing and leaves it held for
+        # as long as the caller takes to consume - or until the generator is
+        # finalized, if the caller abandons it mid-iteration.
         with self._pool.connect() as conn:
             result = conn.execute(stmt)
-            for row in result:
-                yield dict(row._mapping)
+            rows = [dict(row._mapping) for row in result]
+
+        for row in rows:
+            yield row
 
     def find_one(self, **filters) -> dict | None:
         """
@@ -587,13 +637,28 @@ class Table:
         Examples:
             >>> user = table.find_one(name='John')
         """
-        for row in self.find(_limit=1, **filters):
-            return row
+        # closing() mirrors aclosing() in the async twin: close the generator
+        # here rather than leaving it to the garbage collector.
+        with closing(self.find(_limit=1, **filters)) as rows:
+            for row in rows:
+                return row
         return None
 
-    def all(self) -> Iterator[dict]:
+    def all(self, _stream: bool = False) -> Iterator[dict]:
         """
         Get all rows in table.
+
+        The result set is fetched in full before the first row is yielded, so
+        the connection is released before the caller starts consuming.
+
+        Pass ``_stream=True`` to iterate the result set from the database
+        instead: rows arrive as they are read and the connection stays checked
+        out until the iteration finishes, which on a single-connection pool
+        (sqlite ":memory:") also blocks every other caller until then. Close the
+        generator (``contextlib.closing``) if you abandon it early.
+
+        Args:
+            _stream: Iterate from the database instead of fetching everything
 
         Yields:
             All rows as dictionaries
@@ -602,7 +667,7 @@ class Table:
             >>> for user in table.all():
             ...     print(user)
         """
-        for row in self.find():
+        for row in self.find(_stream=_stream):
             yield row
 
     def count(self, **filters) -> int:
@@ -923,11 +988,13 @@ class Table:
         if where_clause is not None:
             stmt = stmt.where(where_clause)
 
-        # Execute and yield rows
+        # Fetch with the connection held, yield after it is released (see find()).
         with self._pool.connect() as conn:
             result = conn.execute(stmt)
-            for row in result:
-                yield dict(row._mapping)
+            rows = [dict(row._mapping) for row in result]
+
+        for row in rows:
+            yield row
 
     def create_index(
         self,
@@ -1055,6 +1122,9 @@ class Table:
         """
         Find rows similar to query vector, ordered by distance.
 
+        The result set is fetched in full before the first row is yielded, so
+        the connection is released before the caller starts consuming.
+
         Args:
             column: Name of the vector column
             query_vector: Query vector (list[float] or numpy array)
@@ -1103,9 +1173,9 @@ class Table:
                         row_dict['_distance'] = dist
                     rows_with_distance.append((dist, row_dict))
 
-                rows_with_distance.sort(key=lambda x: x[0])
-                for _, row_dict in rows_with_distance[:limit]:
-                    yield row_dict
+            rows_with_distance.sort(key=lambda x: x[0])
+            for _, row_dict in rows_with_distance[:limit]:
+                yield row_dict
         else:
             # PostgreSQL/MySQL: use native vector distance
             distance_col = literal_column(dist_expr).label('_distance')
@@ -1121,13 +1191,18 @@ class Table:
             order_clause = asc(text(dist_expr)) if order_dir == "ASC" else desc(text(dist_expr))
             stmt = stmt.order_by(order_clause).limit(limit)
 
+            # Fetch with the connection held, yield after it is released (see find()).
             with self._pool.connect() as conn:
                 result = conn.execute(stmt)
+                rows = []
                 for row in result:
                     row_dict = dict(row._mapping)
                     if not include_distance:
                         row_dict.pop('_distance', None)
-                    yield row_dict
+                    rows.append(row_dict)
+
+            for row_dict in rows:
+                yield row_dict
 
     def create_vector_index(
         self,
@@ -1397,7 +1472,6 @@ class Table:
             return
 
         # Fetch rows by IDs (applying filters to ensure consistency)
-        table = self._get_table()
         yielded_count = 0
 
         for doc_id in top_ids:
