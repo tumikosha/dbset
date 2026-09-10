@@ -1,7 +1,14 @@
 name: Release
 
-# Tag push publishes: `git tag -a v1.2.3 -m v1.2.3 && git push origin v1.2.3`.
+# Tag push runs the tests, builds the artifacts and opens a GitHub release:
+#   git tag -a v1.2.3 -m v1.2.3 && git push origin v1.2.3
 # The tag must match the version in pyproject.toml - the build job checks it.
+#
+# Uploading to PyPI stays manual, from a machine that has the token:
+#   python -m build && twine upload dist/*
+# To let CI do it instead, add a publish job with
+# pypa/gh-action-pypi-publish - it needs either a trusted publisher configured
+# on PyPI or a PYPI_API_TOKEN secret in this repository.
 on:
   push:
     tags: ["v*"]
@@ -65,23 +72,9 @@ jobs:
           name: dist
           path: dist/
 
-  publish:
+  github-release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write  # trusted publishing - no API token stored in the repo
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - uses: pypa/gh-action-pypi-publish@release/v1
-
-  github-release:
-    needs: publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
