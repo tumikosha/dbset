@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.3.0
+
+### Fixed
+
+- A `postgresql://` URL without a driver failed with SQLAlchemy 2.1 and the
+  `postgres` extra: 2.1 made psycopg (v3) the default driver, the extra installs
+  psycopg2 and asyncpg, so `connect()` raised `No module named 'psycopg'`.
+  When SQLAlchemy's default driver is not installed (or, for `async_connect`,
+  cannot do asyncio), dbset now puts in an installed one: psycopg2 or psycopg
+  for `connect`, asyncpg or psycopg for `async_connect`. URLs that name a
+  driver are unchanged.
+- `hybrid_search` with an operator filter (`n={'>=': 2}`, `tags={'?|': [...]}`,
+  `{'in': [...]}`) failed on the full-text side (`can't adapt type 'dict'`,
+  asyncpg: `'dict' object has no attribute 'encode'`), on PostgreSQL and SQLite,
+  sync and async: the filter was bound as a value of `col = :param`. The
+  full-text query now applies only plain equality filters; the row fetch
+  applies them all, as it already did for dotted JSONB keys.
+
+- `insert_many` failed on a new table when a row after the first had `None` in
+  a column: `None` keys without a column were stripped from each row before the
+  columns were created from the first row, so the rows reached `executemany`
+  with different keys (`A value is required for bind parameter`). Only keys
+  that are `None` in every row are dropped now.
+- `insert_many` took column types from the first row only: a key that appears
+  only in later rows was silently lost, a key missing from a later row failed
+  the batch, and an `int` then a `float` made an `INTEGER` column. Types now
+  come from all rows (merged), and each run of consecutive rows with the same
+  keys is one `executemany`, so a row that leaves a column out gets its
+  default, as with `insert`.
+- `insert_many` ignored the configured primary key: with
+  `primary_key_type='uuid'` it created an `INTEGER` key on a new table and
+  failed with `NOT NULL constraint failed` on an existing one. It now creates
+  the table with the configured key and generates missing key values, as
+  `insert` does.
+- `insert_many` committed each chunk on its own, so a failure in a later chunk
+  left the earlier ones written. All chunks now run in one transaction: all
+  rows or none, and one commit instead of one per chunk.
+- `upsert_many` took column types from the first row only: a key that appears
+  only in later rows failed with `Unconsumed column names` after the earlier
+  rows were already written, and an `int` then a `float` made an `INTEGER`
+  column. Types now come from all rows.
+- `upsert_many` was not atomic: each row was its own `SELECT` and `INSERT` or
+  `UPDATE`, each committed on its own. It now runs in one transaction (and
+  joins an outer `db.transaction()`).
+
+### Changed
+
+- `upsert_many` writes in bulk: one `SELECT` of the existing keys per batch,
+  then `executemany` `INSERT` for new rows and `executemany` `UPDATE` for
+  existing ones. 10 000 rows on SQLite: 10 s before, 0.04 s now. Rows with the
+  same keys in one call are merged in order, which leaves the table as
+  upserting them one by one did. Rows whose key value is `None`, or whose key
+  is not a column, still go row by row, with the same results as before.
+
 ## 1.2.0
 
 ### Fixed

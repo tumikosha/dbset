@@ -23,16 +23,17 @@ def _query_tokens(query: str) -> list[str]:
 def _filter_clause(filters: dict | None, prefix: str = "") -> tuple[str, dict]:
     """Render simple equality filters as SQL `AND col = :param` conditions.
 
-    Only plain-identifier columns are rendered (values bound as parameters);
-    dotted/JSONB keys are skipped — the hybrid-search row-fetch still enforces
-    them, this clause only keeps the FTS candidate pool from being flooded by
-    rows the caller will drop anyway.
+    Only plain-identifier columns with a scalar value are rendered (values bound
+    as parameters); dotted/JSONB keys and operator filters ({'>=': 2},
+    {'?|': [...]}, lists) are skipped — the hybrid-search row-fetch still
+    enforces them, this clause only keeps the FTS candidate pool from being
+    flooded by rows the caller will drop anyway.
     """
     if not filters:
         return "", {}
     conds, params = [], {}
     for i, (col, val) in enumerate(filters.items()):
-        if not _IDENT_RE.match(col):
+        if not _IDENT_RE.match(col) or isinstance(val, (dict, list, tuple, set)):
             continue
         p = f"flt_{i}"
         if val is None:

@@ -7,14 +7,18 @@ from typing import Any, AsyncIterator
 from sqlalchemy import MetaData, asc, delete, desc, insert, literal_column, select, text, update, func
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from .connection import AsyncConnectionPool, create_pool_config
+from .connection import AsyncConnectionPool, create_pool_config, resolve_postgres_driver
 from .exceptions import ReadOnlyError, QueryError, TableNotFoundError, VectorError
 from .query import FilterBuilder
 from .schema import AsyncSchemaManager
+from .bulk import existing_keys_select, is_existing, key_batch_size, split_upsert_rows, update_by_keys, update_params
 from .types import (
     PrimaryKeyConfig,
     PrimaryKeyType,
     TypeInference,
+    infer_types_from_rows,
+    insert_batches,
+    prepare_insert_rows,
     strip_uncreatable_nulls,
 )
 from .validators import ReadOnlyValidator
@@ -167,8 +171,8 @@ class AsyncDatabase:
             )
             engine_config.update(pool_config)
 
-        # Create async engine
-        engine = create_async_engine(url, **engine_config)
+        # Create async engine (a postgresql:// URL without a driver gets an installed async one)
+        engine = create_async_engine(resolve_postgres_driver(url, is_async=True), **engine_config)
 
         # Create metadata
         metadata = MetaData(schema=schema)
@@ -558,16 +562,19 @@ class AsyncTable:
 
         ensure = ensure if ensure is not None else self._ensure_schema
 
-        # Get or create table
-        table = await self._schema.get_table(self._name, ensure_exists=ensure)
+        # Get or create table (with the configured primary key, as insert() does)
+        table = await self._schema.get_table(
+            self._name,
+            ensure_exists=ensure,
+            pk_config=self._db._pk_config if ensure else None
+        )
 
-        # Strip None-valued columns that don't exist (skip_null_columns enabled)
-        if self._skip_null_columns:
-            rows = [strip_uncreatable_nulls(r, table) for r in rows]
+        # Generated primary keys; None-only new columns dropped (skip_null_columns)
+        rows = prepare_insert_rows(rows, table, self._db._pk_config, self._skip_null_columns)
 
-        # Infer types from first row and ensure columns
+        # Infer types from all rows and ensure columns
         if ensure:
-            inferred_types = TypeInference.infer_types_from_row(rows[0], dialect=self._dialect)
+            inferred_types = infer_types_from_rows(rows, dialect=self._dialect)
             await self._schema.ensure_columns(table, inferred_types)
 
             # Clear cached table and reload
@@ -577,11 +584,10 @@ class AsyncTable:
         # Preprocess rows (serialize vectors)
         rows = [self._preprocess_row(r) for r in rows]
 
-        # Insert in chunks
+        # One transaction: all rows or none. One executemany per run of rows with the same keys.
         total = 0
-        for i in range(0, len(rows), chunk_size):
-            chunk = rows[i:i + chunk_size]
-            async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn:
+            for chunk in insert_batches(rows, chunk_size):
                 await conn.execute(insert(table), chunk)
                 total += len(chunk)
 
@@ -962,19 +968,20 @@ class AsyncTable:
                 pk_config=self._db._pk_config
             )
 
-            # Strip None-valued columns that don't exist (skip_null_columns enabled)
-            if self._skip_null_columns:
-                rows = [strip_uncreatable_nulls(r, table) for r in rows]
+            # None-only new columns dropped (skip_null_columns); primary keys only for new rows, below
+            rows = prepare_insert_rows(
+                rows, table, self._db._pk_config, self._skip_null_columns, generate_keys=False
+            )
 
-            # Infer types from first row and ensure columns exist
-            inferred_types = TypeInference.infer_types_from_row(rows[0], dialect=self._dialect)
+            # Infer types from all rows and ensure columns exist
+            inferred_types = infer_types_from_rows(rows, dialect=self._dialect)
             if types:
                 inferred_types.update(types)
             await self._schema.ensure_columns(table, inferred_types)
 
             # Filter keys to only include columns that exist in the table (for index creation)
-            # After ensure_columns, columns from row + original table columns all exist
-            table_cols = {col.name for col in table.columns} | set(rows[0].keys())
+            # After ensure_columns, columns from the rows + original table columns all exist
+            table_cols = {col.name for col in table.columns} | set(inferred_types)
             index_keys = [k for k in keys if k in table_cols]
 
             # Get fresh table from schema (metadata is up-to-date after ensure_columns)
@@ -987,9 +994,39 @@ class AsyncTable:
             # Clear cached table
             self._table = None
 
-        # Process each row (upsert handles non-existent keys gracefully)
-        for row in rows:
-            await self.upsert(row, keys=keys, ensure=False, types=types)
+        try:
+            table = await self._schema.get_table(self._name, ensure_exists=False)
+        except TableNotFoundError:
+            table = None  # no table and ensure=False: every row goes row by row, as before
+        bulk, rowwise = split_upsert_rows(rows, keys, table) if table is not None else ({}, list(rows))
+
+        # One transaction; row-by-row upserts inside join it (ambient connection)
+        async with self._pool.acquire(ambient=True) as conn:
+            if bulk:
+                values = list(bulk)
+                found: set[tuple] = set()
+                found_str: set[tuple] = set()
+                step = key_batch_size(keys)
+                for i in range(0, len(values), step):
+                    result = await conn.execute(existing_keys_select(table, keys, values[i:i + step]))
+                    for r in result:
+                        found.add(tuple(r))
+                        found_str.add(tuple(map(str, r)))
+                new = [row for v, row in bulk.items() if not is_existing(v, found, found_str)]
+                old = [row for v, row in bulk.items() if is_existing(v, found, found_str)]
+
+                if new:
+                    new = prepare_insert_rows(new, table, self._db._pk_config, skip_null_columns=False)
+                    new = [self._preprocess_row(r) for r in new]
+                    for chunk in insert_batches(new, chunk_size):
+                        await conn.execute(insert(table), chunk)
+
+                params = [p for p in (update_params(self._preprocess_row(r), keys) for r in old) if p]
+                for chunk in insert_batches(params, chunk_size):
+                    await conn.execute(update_by_keys(table, keys, chunk[0]), chunk)
+
+            for row in rowwise:
+                await self.upsert(row, keys=keys, ensure=False, types=types)
 
         return len(rows)
 

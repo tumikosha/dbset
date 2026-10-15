@@ -37,6 +37,12 @@ pip install 'dbset[dev]'             # development dependencies
 - `aiosqlite>=0.19.0` (async SQLite driver, optional)
 - `numpy>=1.24.0` (for vector type inference from numpy arrays, optional)
 
+A `postgresql://` URL without a driver works with whichever driver is installed.
+SQLAlchemy 2.1 made psycopg (v3) the default for such a URL; when it is not
+installed, `connect()` uses psycopg2 and `async_connect()` uses asyncpg (or
+psycopg). A URL that names a driver (`postgresql+psycopg2://`,
+`postgresql+asyncpg://`) is used as is.
+
 ## Quick Start
     db = connect('sqlite:///:memory:')
     # db = await async_connect('sqlite+aiosqlite:///:memory:')

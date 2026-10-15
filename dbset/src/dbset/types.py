@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
+from itertools import groupby
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -501,3 +502,73 @@ def strip_uncreatable_nulls(row: dict, table) -> dict:
     """
     existing = {c.name for c in table.columns}
     return {k: v for k, v in row.items() if v is not None or k in existing}
+
+
+def prepare_insert_rows(
+    rows: list[dict],
+    table,
+    pk_config: PrimaryKeyConfig,
+    skip_null_columns: bool,
+    generate_keys: bool = True,
+) -> list[dict]:
+    """Copies of rows ready for insert_many: generated primary keys, and no None-only new columns.
+
+    A key that is None in every row and has no column cannot have its type
+    inferred, so with skip_null_columns it is dropped from all rows. A key that
+    is None in some rows only is kept: its column is created from the other rows.
+    generate_keys=False leaves primary keys alone (upsert_many generates them for
+    new rows only). The caller's dicts are not modified.
+    """
+    rows = [dict(r) for r in rows]
+    pk_col = pk_config.column_name
+    if generate_keys and pk_config.generator:
+        for row in rows:
+            if pk_col not in row:
+                row[pk_col] = pk_config.generate_value()
+    if skip_null_columns:
+        existing = {c.name for c in table.columns}
+        keys = dict.fromkeys(k for row in rows for k in row)
+        drop = {k for k in keys if k not in existing and all(row.get(k) is None for row in rows)}
+        if drop:
+            rows = [{k: v for k, v in row.items() if k not in drop} for row in rows]
+    return rows
+
+
+_VALUE_TYPED: tuple[type, ...] = (list, Decimal) + ((np.ndarray,) if HAS_NUMPY else ())
+
+
+def infer_types_from_rows(rows: list[dict], dialect: str | None = None) -> dict[str, TypeEngine]:
+    """Column types that fit every row: per key, the merged type of its non-None values (None only: Text)."""
+    types: dict[str, TypeEngine] = {}
+    seen: set[tuple[str, type]] = set()  # (key, Python type) already merged: same type, same column type
+    for row in rows:
+        for key, value in row.items():
+            if value is None:
+                continue
+            py_type = type(value)
+            # the type of a list (JSON or vector), an ndarray (vector dim) and a Decimal (precision)
+            # depends on the value itself
+            if py_type not in _VALUE_TYPED:
+                if (key, py_type) in seen:
+                    continue
+                seen.add((key, py_type))
+            inferred = TypeInference.infer_type(value, dialect=dialect)
+            types[key] = TypeInference.merge_types(types[key], inferred) if key in types else inferred
+    for row in rows:
+        for key in row:
+            if key not in types:
+                types[key] = TypeInference.infer_type(None, dialect=dialect)
+    return types
+
+
+def insert_batches(rows: list[dict], chunk_size: int):
+    """Runs of consecutive rows with the same keys, at most chunk_size rows each.
+
+    One executemany needs the same keys in every row. Splitting into runs, rather
+    than filling missing keys with None, keeps the input order and lets columns a
+    row leaves out get their database default, as insert() does.
+    """
+    for _, run in groupby(rows, key=frozenset):
+        run = list(run)
+        for i in range(0, len(run), chunk_size):
+            yield run[i:i + chunk_size]

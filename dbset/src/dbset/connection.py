@@ -861,3 +861,53 @@ def create_pool_config(
         'pool_recycle': pool_recycle,
         'pool_pre_ping': True,  # Test connections before using
     }
+
+
+# ---------- PostgreSQL driver for a URL without one ----------
+
+#: Drivers dbset documents, in order of preference, with the module each imports.
+_PG_SYNC_DRIVERS = (("psycopg2", "psycopg2"), ("psycopg", "psycopg"))
+_PG_ASYNC_DRIVERS = (("asyncpg", "asyncpg"), ("psycopg", "psycopg"))
+_PG_DRIVER_MODULES = {"psycopg2": "psycopg2", "psycopg": "psycopg", "asyncpg": "asyncpg", "pg8000": "pg8000"}
+_PG_ASYNC_CAPABLE = {"asyncpg", "psycopg"}
+
+
+def _has_module(name: str) -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec(name) is not None
+
+
+def _sqlalchemy_default_pg_driver() -> str:
+    from sqlalchemy.engine import make_url
+
+    return make_url("postgresql://").get_dialect().driver
+
+
+def resolve_postgres_driver(url, *, is_async: bool, has_module=None, default_driver: str | None = None):
+    """Name an installed driver in a `postgresql://` URL that has none.
+
+    SQLAlchemy 2.1 made psycopg (v3) the default driver of `postgresql://`, 2.0 had
+    psycopg2; the `postgres` extra installs psycopg2 and asyncpg. When SQLAlchemy's
+    default driver is installed (and, for async, can do asyncio) the URL is returned
+    unchanged; otherwise the first installed of psycopg2/psycopg (sync) or
+    asyncpg/psycopg (async) is put in. A URL with a driver, another database, or no
+    usable driver installed is returned unchanged (SQLAlchemy then reports the problem).
+    """
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(url)
+    if parsed.drivername != "postgresql":
+        return url
+    has_module = has_module or _has_module
+    default = default_driver or _sqlalchemy_default_pg_driver()
+    default_ok = has_module(_PG_DRIVER_MODULES.get(default, default)) and (
+        not is_async or default in _PG_ASYNC_CAPABLE
+    )
+    if default_ok:
+        return url
+    for driver, module in _PG_ASYNC_DRIVERS if is_async else _PG_SYNC_DRIVERS:
+        if has_module(module):
+            new = parsed.set(drivername=f"postgresql+{driver}")
+            return new.render_as_string(hide_password=False) if isinstance(url, str) else new
+    return url
