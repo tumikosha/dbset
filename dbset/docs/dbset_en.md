@@ -1437,6 +1437,55 @@ items.create_vector_index('embedding', method='hnsw', metric='cosine')
 items.create_vector_index('embedding', method='ivfflat', metric='l2', lists=100)
 ```
 
+### libSQL: Vectors and DiskANN Index on SQLite
+
+[libSQL](https://github.com/tursodatabase/libsql) is Turso's fork of SQLite with a
+native vector type and a DiskANN index. Install `pip install 'dbset[libsql]'` and use
+`sqlite+dbsetlibsql://` (sync) or `sqlite+dbsetaiolibsql://` (async) URLs; everything else works
+as on SQLite.
+
+```python
+from dbset import connect, async_connect
+
+db = connect('sqlite+dbsetlibsql:///vectors.db')        # or 'sqlite+dbsetlibsql://' in memory
+# db = await async_connect('sqlite+dbsetaiolibsql:///vectors.db')
+items = db['items']
+
+items.insert({'name': 'doc1', 'embedding': embedding})   # column created as F32_BLOB(dim)
+
+# Without an index: distances are computed in SQL (vector_distance_cos / vector_distance_l2)
+rows = list(items.find_similar('embedding', query, limit=10))
+
+# DiskANN index (metric: 'cosine' or 'l2'; optional libSQL params)
+items.create_vector_index('embedding', metric='cosine')
+items.create_vector_index('embedding', metric='l2', max_neighbors=64, compress_neighbors='float8')
+
+# Searches without filters now use the index (vector_top_k)
+rows = list(items.find_similar('embedding', query, limit=10))
+```
+
+- Vectors are stored as `F32_BLOB(dim)` (little-endian float32); read back they are
+  `bytes` - `dbset.vector.deserialize_vector(row['embedding'])` gives `list[float]`.
+- The index is used when its metric matches the search. With filters (also in
+  `hybrid_search`): libSQL's `vector_top_k` picks candidates before any `WHERE`, so dbset
+  fetches `limit × 10`, then `× 100`, `× 1000` candidates and filters them until `limit`
+  rows pass. `vector_top_k` yields at most the index's `search_l` candidates (200 by
+  default) however many are asked; when that cap is reached before `limit` rows pass,
+  the search falls back to an exact scan (`ORDER BY vector_distance_*`). Pass e.g.
+  `search_l=1000` to `create_vector_index` to widen it. The same holds for a `limit`
+  above `search_l` without filters: the search is exact rather than cut short.
+- Partial index for a frequent filter: `create_vector_index('embedding', where={'lang': 'en'})`
+  indexes only those rows; a search whose equality filters include `lang='en'` uses it in
+  one pass, other filters are applied on its candidates as above. Of several matching
+  indexes the one with the most conditions wins.
+- DiskANN is approximate: the top results may miss a true neighbour now and then.
+- `inner_product`: no libSQL function or index; computed in Python as on SQLite.
+- A vector column created by plain SQLite is `TEXT`: it can be searched but not
+  indexed (`VectorError`). Only local files and `:memory:` are supported; remote
+  Turso URLs are not.
+- The `libsql` package has no prebuilt wheel for some Python/platform pairs
+  (e.g. CPython 3.14 on macOS), so it is not part of `dbset[all]`.
+
 ---
 
 ## Hybrid Search (BM25 + Vector)

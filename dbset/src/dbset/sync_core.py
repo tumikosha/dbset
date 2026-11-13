@@ -22,11 +22,23 @@ from .types import (
 )
 from .validators import ReadOnlyValidator
 from .vector import (
+    LIBSQL,
+    LIBSQL_ANN_OVERSAMPLE,
+    LIBSQL_INDEX_METRICS,
+    LIBSQL_TABLE_INDEXES_SQL,
     DistanceMetric,
     Vector,
     compute_distance,
     deserialize_vector,
+    find_libsql_vector_index,
+    LIBSQL_ROWID_KEY,
+    libsql_candidates_query,
+    libsql_create_index_sql,
+    libsql_indexed_count_query,
+    libsql_rows_query,
+    pick_libsql_candidates,
     serialize_vector,
+    vector_dialect,
     vector_distance_sql,
 )
 from .fts import FTSManager
@@ -415,6 +427,11 @@ class Table:
     def _dialect(self) -> str:
         """Get database dialect name (e.g., 'postgresql', 'sqlite')."""
         return self._db._engine.dialect.name
+
+    @property
+    def _vector_dialect(self) -> str:
+        """Dialect name for vector storage and search: 'libsql' for libSQL, else _dialect."""
+        return vector_dialect(self._db._engine.dialect)
 
     def insert(
         self,
@@ -1143,9 +1160,9 @@ class Table:
         result = {}
         for key, value in row.items():
             if HAS_NUMPY and isinstance(value, np.ndarray):
-                result[key] = serialize_vector(value, self._dialect)
+                result[key] = serialize_vector(value, self._vector_dialect)
             elif isinstance(value, list) and TypeInference._is_vector_list(value):
-                result[key] = serialize_vector(value, self._dialect)
+                result[key] = serialize_vector(value, self._vector_dialect)
             else:
                 result[key] = value
         return result
@@ -1189,8 +1206,22 @@ class Table:
         if HAS_NUMPY and isinstance(query_vector, np.ndarray):
             query_vector = query_vector.tolist()
 
-        dialect_name = self._dialect
-        dist_expr, order_dir = vector_distance_sql(column, query_vector, metric, dialect_name)
+        dialect_name = self._vector_dialect
+        column_sql = column
+        if dialect_name == LIBSQL:
+            preparer = self._db._engine.dialect.identifier_preparer
+            column_sql = preparer.quote(column)
+            rows = self._libsql_ann_search(
+                table, column, query_vector, metric, limit, threshold, filters, preparer
+            )
+            if rows is not None:
+                for row_dict in rows:
+                    if not include_distance:
+                        row_dict.pop('_distance', None)
+                    yield row_dict
+                return
+
+        dist_expr, order_dir = vector_distance_sql(column_sql, query_vector, metric, dialect_name)
 
         if dist_expr == "__python_distance__":
             # SQLite fallback: fetch all rows and compute distance in Python
@@ -1226,6 +1257,11 @@ class Table:
             if where_clause is not None:
                 stmt = stmt.where(where_clause)
 
+            if dialect_name == LIBSQL:
+                # libSQL's vector_distance_* raise on NULL; rows without a vector are skipped
+                # (as the Python fallback skips them).
+                stmt = stmt.where(literal_column(column_sql).isnot(None))
+
             if threshold is not None:
                 stmt = stmt.where(text(f"{dist_expr} <= :threshold").bindparams(threshold=threshold))
 
@@ -1248,18 +1284,24 @@ class Table:
     def create_vector_index(
         self,
         column: str,
-        method: str = 'hnsw',
+        method: str | None = None,
         metric: str = DistanceMetric.COSINE,
+        where: dict[str, Any] | None = None,
         **params,
     ) -> str:
         """
-        Create vector similarity search index (PostgreSQL only with pgvector).
+        Create vector similarity search index (PostgreSQL with pgvector, or libSQL).
 
         Args:
             column: Vector column name
-            method: Index method ('hnsw' or 'ivfflat')
-            metric: Distance metric for index ops class
-            **params: Additional index parameters (e.g., m=16, ef_construction=64)
+            method: Index method. PostgreSQL: 'hnsw' (default) or 'ivfflat';
+                    libSQL: 'diskann' (default, the only one)
+            metric: Distance metric for index ops class. libSQL: 'cosine' or 'l2'
+            where: libSQL only: a partial index over the rows where every
+                   ``column == value`` holds, e.g. ``{'lang': 'en'}``. find_similar
+                   uses it for searches whose equality filters include these.
+            **params: Additional index parameters. PostgreSQL: e.g. m=16, ef_construction=64;
+                      libSQL: e.g. max_neighbors=64, compress_neighbors='float8'
 
         Returns:
             Index name
@@ -1267,6 +1309,12 @@ class Table:
         Raises:
             VectorError: If dialect does not support vector indexes
         """
+        if self._vector_dialect == LIBSQL:
+            return self._create_libsql_vector_index(column, method, metric, params, where)
+
+        if where:
+            raise VectorError("Partial vector indexes (where=...) are supported on libSQL only")
+
         if self._dialect != 'postgresql':
             raise VectorError(
                 f"Vector indexes are only supported on PostgreSQL with pgvector, "
@@ -1279,6 +1327,7 @@ class Table:
             DistanceMetric.INNER_PRODUCT: 'vector_ip_ops',
         }
         ops_class = ops_map.get(metric, 'vector_cosine_ops')
+        method = method or 'hnsw'
 
         index_name = f"idx_{self._name}_{column}_{method}_{metric}"
 
@@ -1302,6 +1351,95 @@ class Table:
             conn.execute(DDL(create_sql))
 
         return index_name
+
+    def _create_libsql_vector_index(
+        self, column: str, method: str | None, metric: str, params: dict, where: dict | None = None,
+    ) -> str:
+        """CREATE INDEX ... (libsql_vector_idx(column, 'metric=...')) - a DiskANN index."""
+        if method not in (None, 'diskann'):
+            raise VectorError(f"libSQL vector indexes use DiskANN; method {method!r} is not supported")
+        if metric not in LIBSQL_INDEX_METRICS:
+            raise VectorError(
+                f"libSQL vector indexes support metrics {sorted(LIBSQL_INDEX_METRICS)}, got {metric!r}"
+            )
+        table = self._get_table()
+        preparer = self._db._engine.dialect.identifier_preparer
+        try:
+            index_name, create_sql = libsql_create_index_sql(table, column, metric, params, preparer, where)
+        except ValueError as e:
+            raise VectorError(str(e)) from e
+        try:
+            with self._pool.acquire() as conn:
+                conn.execute(text(create_sql))
+        except Exception as e:
+            hint = ""
+            if "unexpected vector column type" in str(e):
+                hint = (
+                    " The column must be declared F32_BLOB(dim): dbset declares it so for vectors it "
+                    "creates on libSQL; a column created by plain SQLite (TEXT) cannot be indexed."
+                )
+            raise VectorError(f"Failed to create libSQL vector index on {table.name}.{column}: {e}.{hint}") from e
+        return index_name
+
+    def _libsql_ann_search(self, table, column, query_vector, metric, limit, threshold, filters, preparer):
+        """Nearest rows through a DiskANN index, ordered like the exact scan; None when no
+        index serves the search or only an exact scan can give a complete answer.
+
+        vector_top_k picks its candidates before any WHERE. The index whose conditions
+        (partial index) cover the most equality filters is used; the other filters run on
+        limit * 10, * 100, * 1000 candidates until `limit` rows pass. vector_top_k yields at
+        most the index's search_l candidates (200 by default) whatever k is asked: fewer
+        candidates than k means the cap was hit - unless they are every row the index holds,
+        the caller then scans exactly. The same check guards searches without filters, so a
+        `limit` above search_l is not cut short either.
+        """
+        if limit < 0:
+            return None  # SQLite reads LIMIT -1 as "no limit": the exact scan does that
+        if limit == 0:
+            return []
+        with self._pool.connect() as conn:
+            result = conn.execute(LIBSQL_TABLE_INDEXES_SQL, {'table_name': table.name})
+            index_rows = result.fetchall()
+        plan = find_libsql_vector_index(index_rows, column, metric, filters)
+        if plan is None:
+            return None
+        index_name, conditions, residual = plan
+        where_clause = FilterBuilder.build(table, residual, dialect=self._dialect) if residual else None
+        factors = LIBSQL_ANN_OVERSAMPLE if where_clause is not None else (1,) + LIBSQL_ANN_OVERSAMPLE
+        indexed = None
+        for factor in factors:
+            k = limit * factor
+            with self._pool.connect() as conn:
+                stmt = libsql_candidates_query(
+                    table, column, query_vector, metric, index_name, k, where_clause, preparer
+                )
+                result = conn.execute(stmt)
+                candidates = result.fetchall()
+                complete, chosen = pick_libsql_candidates(candidates, limit, threshold)
+                if not complete and len(candidates) < k:
+                    if indexed is None:
+                        result = conn.execute(libsql_indexed_count_query(table, column, conditions))
+                        indexed = result.scalar()
+                    if len(candidates) < indexed:
+                        return None  # capped by search_l: only an exact scan is complete
+                    complete = True  # every indexed row was a candidate
+                if not complete:
+                    continue
+                if not chosen:
+                    return []
+                result = conn.execute(libsql_rows_query(table, [rowid for rowid, _ in chosen], preparer))
+                by_rowid = {}
+                for row in result:
+                    row_dict = dict(row._mapping)
+                    by_rowid[row_dict.pop(LIBSQL_ROWID_KEY)] = row_dict
+            rows = []
+            for rowid, distance in chosen:
+                row_dict = by_rowid.get(rowid)
+                if row_dict is not None:  # deleted in between
+                    row_dict['_distance'] = distance
+                    rows.append(row_dict)
+            return rows
+        return None
 
     def create_fts_index(
         self,

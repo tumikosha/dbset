@@ -32,6 +32,9 @@ psycopg2 = ["psycopg2-binary>=2.9.9"]
 aiosqlite = ["aiosqlite>=0.19.0"]
 postgres = ["asyncpg>=0.29.0", "psycopg2-binary>=2.9.9"]
 vector = ["numpy>=1.24.0"]
+# libSQL (Turso's SQLite fork): sqlite+dbsetlibsql:// and sqlite+dbsetaiolibsql:// URLs, F32_BLOB vectors, DiskANN index.
+# Not in "all": libsql has no prebuilt wheel for every Python/platform (none for CPython 3.14 on macOS).
+libsql = ["libsql>=0.1.11", "aiosqlite>=0.19.0"]
 all = ["asyncpg>=0.29.0", "psycopg2-binary>=2.9.9", "aiosqlite>=0.19.0", "numpy>=1.24.0"]
 dev = ["pytest>=8.0,<9.0", "pytest-asyncio>=0.23.0,<1.0.0", "aiosqlite>=0.19.0", "numpy>=1.24.0"]
 

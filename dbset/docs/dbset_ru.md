@@ -1438,6 +1438,43 @@ items.create_vector_index('embedding', method='hnsw', metric='cosine')
 items.create_vector_index('embedding', method='ivfflat', metric='l2', lists=100)
 ```
 
+### Векторы и DiskANN-индекс на libSQL
+
+libSQL — форк SQLite от Turso со встроенным векторным типом и DiskANN-индексом.
+Установка: `pip install 'dbset[libsql]'`. URL: `sqlite+dbsetlibsql:///file.db` (sync) или
+`sqlite+dbsetaiolibsql:///file.db` (async). Остальное работает как на SQLite.
+
+```python
+db = connect('sqlite+dbsetlibsql:///vectors.db')
+items = db['items']
+items.insert({'name': 'doc1', 'embedding': embedding})   # колонка F32_BLOB(dim)
+
+# Без индекса расстояния считаются в SQL (vector_distance_cos / vector_distance_l2)
+rows = list(items.find_similar('embedding', query, limit=10))
+
+# DiskANN-индекс: metric 'cosine' или 'l2'
+items.create_vector_index('embedding', metric='cosine')
+rows = list(items.find_similar('embedding', query, limit=10))   # через vector_top_k
+```
+
+- Векторы хранятся как `F32_BLOB(dim)` (float32 little-endian) и читаются как `bytes`;
+  `dbset.vector.deserialize_vector()` превращает их в `list[float]`.
+- Индекс используется, если его метрика совпадает с метрикой поиска. С фильтрами
+  (и в `hybrid_search`): `vector_top_k` отбирает кандидатов до `WHERE`, поэтому dbset
+  берёт `limit × 10`, затем `× 100`, `× 1000` кандидатов и фильтрует их, пока не
+  наберётся `limit`. `vector_top_k` отдаёт не больше `search_l` кандидатов индекса
+  (по умолчанию 200); если предел достигнут раньше, поиск переходит на точный перебор.
+  Расширить: `create_vector_index(..., search_l=1000)`. То же при `limit` больше
+  `search_l` без фильтров: поиск точный, а не обрезанный.
+- Частичный индекс под частый фильтр: `create_vector_index('embedding', where={'lang': 'en'})`.
+  Поиск, чьи фильтры-равенства включают `lang='en'`, идёт по нему за один проход;
+  остальные фильтры применяются к его кандидатам. Из подходящих индексов выбирается
+  тот, у которого больше условий.
+- DiskANN приближённый: изредка в топе может не оказаться настоящего соседа.
+- `inner_product`: в libSQL нет ни функции, ни индекса — считается в Python.
+- Колонку, созданную обычным SQLite (`TEXT`), можно искать, но не индексировать
+  (`VectorError`). Поддерживаются только локальные файлы и `:memory:`, удалённый Turso — нет.
+
 ---
 
 ## Гибридный поиск (BM25 + Vector)

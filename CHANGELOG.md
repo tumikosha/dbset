@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- libSQL (Turso's SQLite fork) support: `sqlite+dbsetlibsql://` (sync) and
+  `sqlite+dbsetaiolibsql://` (async) URLs, extra `dbset[libsql]`. Vector columns are
+  created as `F32_BLOB(dim)` and stored as float32 blobs; `find_similar` computes
+  cosine and L2 distances in SQL; `create_vector_index` builds a DiskANN index
+  (`libsql_vector_idx`), optionally partial (`where={'col': value}`), which
+  `find_similar` and `hybrid_search` use; with filters they oversample candidates
+  (`limit` × 10, × 100, × 1000) and scan exactly when the index cannot supply
+  `limit` matches.
+  Local files and `:memory:` only. The URL names are dbset's own, so the
+  `sqlite+libsql://` dialects of the `sqlalchemy-libsql` package (whose async
+  dialect does not run) keep working in the same process.
+- `deserialize_vector` reads float32 blobs.
+
+### Changed
+
+- `create_vector_index(method=None)`: the default is now `None`, meaning
+  `'hnsw'` on PostgreSQL (as before) and `'diskann'` on libSQL.
+
 ## 1.3.0
 
 ### Fixed

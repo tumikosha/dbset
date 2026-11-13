@@ -22,6 +22,7 @@ from sqlalchemy.types import TypeEngine
 from .connection import scoped_connection, sync_scoped_connection
 from .exceptions import ColumnNotFoundError, SchemaError, TableNotFoundError
 from .types import PrimaryKeyConfig, TypeInference
+from .libsql import is_libsql
 from .vector import Vector
 
 
@@ -234,8 +235,13 @@ class AsyncSchemaManager:
             col = Column(column_name, column_type)
             col_type_sql = col.type.compile(dialect=self._engine.dialect)
 
-            # Vector columns: use TEXT for SQLite (pgvector/MySQL handle VECTOR natively)
-            if isinstance(column_type, Vector) and self._engine.dialect.name == 'sqlite':
+            # Vector columns: use TEXT for SQLite (pgvector/MySQL handle VECTOR natively;
+            # libSQL compiles a sized Vector to F32_BLOB(dim), see vector.py)
+            if (
+                isinstance(column_type, Vector)
+                and self._engine.dialect.name == 'sqlite'
+                and not (is_libsql(self._engine.dialect) and column_type.dim is not None)
+            ):
                 col_type_sql = 'TEXT'
 
             # Quote identifiers properly for SQL safety (handles special chars like dashes)
@@ -601,8 +607,13 @@ class SyncSchemaManager:
             col = Column(column_name, column_type)
             col_type_sql = col.type.compile(dialect=self._engine.dialect)
 
-            # Vector columns: use TEXT for SQLite (pgvector/MySQL handle VECTOR natively)
-            if isinstance(column_type, Vector) and self._engine.dialect.name == 'sqlite':
+            # Vector columns: use TEXT for SQLite (pgvector/MySQL handle VECTOR natively;
+            # libSQL compiles a sized Vector to F32_BLOB(dim), see vector.py)
+            if (
+                isinstance(column_type, Vector)
+                and self._engine.dialect.name == 'sqlite'
+                and not (is_libsql(self._engine.dialect) and column_type.dim is not None)
+            ):
                 col_type_sql = 'TEXT'
 
             # Quote identifiers properly for SQL safety (handles special chars like dashes)

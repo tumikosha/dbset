@@ -24,6 +24,7 @@ pip install 'dbset[psycopg2]'        # + sync PostgreSQL driver
 pip install 'dbset[postgres]'        # + all PostgreSQL drivers
 pip install 'dbset[aiosqlite]'       # + async SQLite driver
 pip install 'dbset[vector]'            # + numpy for vector support
+pip install 'dbset[libsql]'          # + libSQL (SQLite fork with vector index)
 pip install 'dbset[all]'             # all drivers + numpy
 pip install 'dbset[dev]'             # development dependencies
 ```
@@ -36,6 +37,7 @@ pip install 'dbset[dev]'             # development dependencies
 - `psycopg2-binary>=2.9.9` (sync PostgreSQL driver, optional)
 - `aiosqlite>=0.19.0` (async SQLite driver, optional)
 - `numpy>=1.24.0` (for vector type inference from numpy arrays, optional)
+- `libsql>=0.1.11` (libSQL driver for `sqlite+dbsetlibsql://` / `sqlite+dbsetaiolibsql://`, optional)
 
 A `postgresql://` URL without a driver works with whichever driver is installed.
 SQLAlchemy 2.1 made psycopg (v3) the default for such a URL; when it is not
@@ -463,11 +465,61 @@ items.create_vector_index('embedding', method='ivfflat', metric='l2', lists=100)
 await items.create_vector_index('embedding', method='hnsw', metric='cosine')
 ```
 
+#### libSQL: Vectors and DiskANN Index on SQLite
+
+[libSQL](https://github.com/tursodatabase/libsql) is Turso's fork of SQLite with a
+native vector type and a DiskANN index. Install `pip install 'dbset[libsql]'` and use
+`sqlite+dbsetlibsql://` (sync) or `sqlite+dbsetaiolibsql://` (async) URLs; everything else works
+as on SQLite.
+
+```python
+from dbset import connect, async_connect
+
+db = connect('sqlite+dbsetlibsql:///vectors.db')        # or 'sqlite+dbsetlibsql://' in memory
+# db = await async_connect('sqlite+dbsetaiolibsql:///vectors.db')
+items = db['items']
+
+items.insert({'name': 'doc1', 'embedding': embedding})   # column created as F32_BLOB(dim)
+
+# Without an index: distances are computed in SQL (vector_distance_cos / vector_distance_l2)
+rows = list(items.find_similar('embedding', query, limit=10))
+
+# DiskANN index (metric: 'cosine' or 'l2'; optional libSQL params)
+items.create_vector_index('embedding', metric='cosine')
+items.create_vector_index('embedding', metric='l2', max_neighbors=64, compress_neighbors='float8')
+
+# Searches without filters now use the index (vector_top_k)
+rows = list(items.find_similar('embedding', query, limit=10))
+```
+
+- Vectors are stored as `F32_BLOB(dim)` (little-endian float32); read back they are
+  `bytes` - `dbset.vector.deserialize_vector(row['embedding'])` gives `list[float]`.
+- The index is used when its metric matches the search. With filters (also in
+  `hybrid_search`): libSQL's `vector_top_k` picks candidates before any `WHERE`, so dbset
+  fetches `limit × 10`, then `× 100`, `× 1000` candidates and filters them until `limit`
+  rows pass. `vector_top_k` yields at most the index's `search_l` candidates (200 by
+  default) however many are asked; when that cap is reached before `limit` rows pass,
+  the search falls back to an exact scan (`ORDER BY vector_distance_*`). Pass e.g.
+  `search_l=1000` to `create_vector_index` to widen it. The same holds for a `limit`
+  above `search_l` without filters: the search is exact rather than cut short.
+- Partial index for a frequent filter: `create_vector_index('embedding', where={'lang': 'en'})`
+  indexes only those rows; a search whose equality filters include `lang='en'` uses it in
+  one pass, other filters are applied on its candidates as above. Of several matching
+  indexes the one with the most conditions wins.
+- DiskANN is approximate: the top results may miss a true neighbour now and then.
+- `inner_product`: no libSQL function or index; computed in Python as on SQLite.
+- A vector column created by plain SQLite is `TEXT`: it can be searched but not
+  indexed (`VectorError`). Only local files and `:memory:` are supported; remote
+  Turso URLs are not.
+- The `libsql` package has no prebuilt wheel for some Python/platform pairs
+  (e.g. CPython 3.14 on macOS), so it is not part of `dbset[all]`.
+
 #### Database-Specific Storage
 
 | Database | Storage Type | Similarity Search | Index Support |
 |----------|-------------|-------------------|---------------|
 | SQLite | TEXT (JSON string) | Python-side computation | No |
+| libSQL | F32_BLOB(dim) | `vector_distance_cos` / `vector_distance_l2` (inner product in Python) | DiskANN |
 | PostgreSQL | VECTOR(dim) via pgvector | Native operators (`<->`, `<=>`, `<#>`) | HNSW, IVFFlat |
 | MySQL 9+ | VECTOR | `VECTOR_DISTANCE()` function | No |
 
@@ -482,7 +534,7 @@ await items.create_vector_index('embedding', method='hnsw', metric='cosine')
 **Notes:**
 - **numpy is fully optional.** Plain Python lists with ≥64 numeric elements are automatically detected as vectors. No JSON strings or explicit types needed for typical ML embeddings.
 - `find_similar()` accepts both `list[float]` and numpy arrays as query vectors.
-- For SQLite, similarity search fetches all rows and computes distances in Python. This works well for small-to-medium datasets. For large-scale vector search, use PostgreSQL with pgvector.
+- For SQLite, similarity search fetches all rows and computes distances in Python. This works well for small-to-medium datasets. For large-scale vector search, use PostgreSQL with pgvector or libSQL with a DiskANN index.
 
 ### Hybrid Search (BM25 + Vector)
 

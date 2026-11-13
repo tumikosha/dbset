@@ -60,6 +60,7 @@ from .exceptions import (
 from .sync_core import Database, Table
 from .types import PrimaryKeyConfig, PrimaryKeyType
 from .vector import DistanceMetric, Vector
+from . import libsql as _libsql  # registers sqlite+dbsetlibsql:// and sqlite+dbsetaiolibsql://  # noqa: F401
 from .hybrid import FusionMethod
 
 __version__ = "1.3.0"
